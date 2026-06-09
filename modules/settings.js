@@ -2,7 +2,7 @@
 import { chat_metadata, saveChatDebounced, saveSettingsDebounced } from '../../../../../script.js';
 import { extension_settings } from '../../../../extensions.js';
 import { MODULE_NAME, normalizeImpactSettings, normalizeImpactValue, normalizeVnReplyLength, resolveImpactScaleSettings } from './constants.js';
-import { recalculateAllStats, injectCombinedSocialPrompt, addGlobalLog, bindActivePersonaState, getCurrentPersonaScopeKey, mergeCharacterRecords, resolveCharacterIdentity, exportActivePersonaSnapshot, importActivePersonaSnapshot, clearActivePersonaSnapshot } from './social.js';
+import { recalculateAllStats, injectCombinedSocialPrompt, addGlobalLog, bindActivePersonaState, getCurrentPersonaScopeKey, mergeCharacterRecords, resolveCharacterIdentity, exportActivePersonaSnapshot, importActivePersonaSnapshot, clearActivePersonaSnapshot, editSocialUpdate, getSocialUpdatesForMessage, deleteSocialUpdate } from './social.js';
 import { notifySuccess, notifyInfo, notifyError, showHudToast } from './toasts.js';
 import { restoreVNOptions, clearSavedVNOptions } from './generator.js';
 
@@ -243,6 +243,8 @@ export function setupExtensionSettings() {
                         <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-autogen" ${s.autoGen ? 'checked' : ''}><span>Авто-показ вариантов действий</span></label>
                         <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-emotional-choice" ${s.emotionalChoiceFraming ? 'checked' : ''}><span>Тон и прогноз вариантов</span></label>
                         <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-disable-tracker" ${s.disableRelationshipTracker ? 'checked' : ''}><span>Отключить трекер отношений</span></label>
+                        <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-moment-antialiased" ${s.momentAntialiased !== false ? 'checked' : ''}><span>Сглаживание текста в Дневнике</span></label>
+                        <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-moment-force-gpu" ${s.momentForceGPU === true ? 'checked' : ''}><span>Принудительный GPU-рендеринг карточек</span></label>
                     </div>
                     <div class="bb-vn-settings-panel">
                         <label for="bb-vn-cfg-reply-length" class="bb-vn-settings-panel-label">Длина VN-ответа</label>
@@ -312,6 +314,14 @@ export function setupExtensionSettings() {
                         <hr class="bb-vn-settings-divider">
                         <button id="bb-dbg-reset-char" class="menu_button bb-vn-settings-button" style="background: rgba(239, 68, 68, 0.2); color: #ef4444; border-color: #ef4444;">💀 Полностью обнулить персонажа</button>
                         <button id="bb-dbg-toast" class="menu_button bb-vn-settings-button"><i class="fa-solid fa-bell"></i>&ensp; Рандомное уведомление</button>
+                        <hr class="bb-vn-settings-divider">
+                        <span class="bb-vn-settings-section-title bb-vn-settings-section-title--small">✏️ Редактирование событий</span>
+                        <span class="bb-vn-settings-note">Выберите сообщение (по индексу) и отредактируйте описание, эмоцию или импакт события. Изменения пересчитают статы.</span>
+                        <div class="bb-vn-settings-split">
+                            <input type="number" id="bb-dbg-edit-msg-idx" class="text_pole" placeholder="Индекс сообщения" min="0" inputmode="numeric" style="width: 50%;">
+                            <button id="bb-dbg-edit-load" class="menu_button bb-vn-settings-button" style="flex:1;"><i class="fa-solid fa-magnifying-glass"></i>&ensp; Загрузить</button>
+                        </div>
+                        <div id="bb-dbg-edit-events-list" style="display:flex; flex-direction:column; gap:6px; margin-top:4px;"></div>
                     </div>
                 </div>
 
@@ -465,6 +475,16 @@ export function setupExtensionSettings() {
         recalculateAllStats(false);
         if (typeof window.updateHudVisibility === 'function') window.updateHudVisibility();
         if (typeof window.renderSocialHud === 'function') window.renderSocialHud();
+    });
+    jQuery('#bb-vn-cfg-moment-antialiased').on('change', function() {
+        extension_settings[MODULE_NAME].momentAntialiased = jQuery(this).is(':checked');
+        saveSettingsDebounced();
+        applyMomentRenderClasses();
+    });
+    jQuery('#bb-vn-cfg-moment-force-gpu').on('change', function() {
+        extension_settings[MODULE_NAME].momentForceGPU = jQuery(this).is(':checked');
+        saveSettingsDebounced();
+        applyMomentRenderClasses();
     });
     jQuery('#bb-vn-cfg-reply-length').on('change', function() {
         extension_settings[MODULE_NAME].vnReplyLength = normalizeVnReplyLength(jQuery(this).val());
@@ -690,6 +710,104 @@ export function setupExtensionSettings() {
         showHudToast(sample);
     });
 
+    const IMPACT_TOKEN_OPTIONS = ['none', 'minor_positive', 'minor_negative', 'major_positive', 'major_negative', 'life_changing', 'unforgivable'];
+    const IMPACT_TOKEN_LABELS = { none: 'Нет', minor_positive: '🟢 Слабый +', minor_negative: '🔴 Слабый −', major_positive: '🟢 Сильный +', major_negative: '🔴 Сильный −', life_changing: '✨ Судьбоносный +', unforgivable: '💀 Критический −' };
+
+    function renderEditEventsList(messageIndex) {
+        const container = jQuery('#bb-dbg-edit-events-list');
+        container.empty();
+        const updates = getSocialUpdatesForMessage(messageIndex);
+        if (updates.length === 0) {
+            container.html('<div style="font-size:11px; color:#94a3b8; padding:4px 0;">У этого сообщения нет событий.</div>');
+            return;
+        }
+        updates.forEach((u, i) => {
+            const impactOptionsHtml = (currentValue, fieldName) => IMPACT_TOKEN_OPTIONS.map(opt =>
+                `<option value="${opt}" ${opt === currentValue ? 'selected' : ''}>${IMPACT_TOKEN_LABELS[opt] || opt}</option>`
+            ).join('');
+            const card = jQuery(`
+                <div class="bb-vn-edit-event-card" data-msg-idx="${messageIndex}" data-update-idx="${i}" style="border:1px solid rgba(148,163,184,0.2); border-radius:8px; padding:8px; background:rgba(15,23,42,0.3);">
+                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+                        <strong style="font-size:12px; color:#e2e8f0;">${i + 1}. ${u.name}</strong>
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:4px;">
+                        <input type="text" class="text_pole bb-edit-reason" value="${(u.reason || '').replace(/"/g, '&quot;')}" placeholder="Описание / причина" style="font-size:12px;">
+                        <input type="text" class="text_pole bb-edit-emotion" value="${(u.emotion || '').replace(/"/g, '&quot;')}" placeholder="Эмоция" style="font-size:12px;">
+                        <div style="display:flex; gap:4px;">
+                            <select class="text_pole bb-edit-friendship" style="font-size:11px; flex:1;">${impactOptionsHtml(u.friendship_impact)}</select>
+                            <select class="text_pole bb-edit-romance" style="font-size:11px; flex:1;">${impactOptionsHtml(u.romance_impact)}</select>
+                        </div>
+                        <button type="button" class="menu_button bb-dbg-event-save" data-msg-idx="${messageIndex}" data-update-idx="${i}" style="font-size:11px; padding:4px 12px; color:#4ade80; border-color:rgba(74,222,128,0.3); margin-top:2px;"><i class="fa-solid fa-floppy-disk"></i>&ensp;Сохранить</button>
+                        <button type="button" class="menu_button bb-dbg-event-delete" data-msg-idx="${messageIndex}" data-update-idx="${i}" style="font-size:11px; padding:4px 12px; color:#f87171; border-color:rgba(248,113,113,0.3);"><i class="fa-solid fa-trash-can"></i></button>
+                    </div>
+                </div>
+            `);
+            container.append(card);
+        });
+    }
+
+    jQuery('#bb-dbg-edit-load').on('click', function() {
+        const msgIdx = parseInt(jQuery('#bb-dbg-edit-msg-idx').val(), 10);
+        if (Number.isNaN(msgIdx) || msgIdx < 0) return notifyError('Укажите корректный индекс сообщения!');
+        const chat = SillyTavern.getContext()?.chat;
+        if (!chat || msgIdx >= chat.length) return notifyError('Сообщение с таким индексом не найдено!');
+        renderEditEventsList(msgIdx);
+    });
+
+    jQuery('#bb-dbg-edit-msg-idx').on('focus', function() {
+        if (jQuery(this).val()) return;
+        const chat = SillyTavern.getContext()?.chat;
+        if (!chat || !chat.length) return;
+        const lastAssistantIdx = [...chat].map((m, i) => ({ m, i })).reverse().find(x => !x.m.is_user)?.i;
+        if (lastAssistantIdx !== undefined) jQuery(this).attr('placeholder', `Последний ответ: ${lastAssistantIdx}`);
+    });
+
+    jQuery('#bb-dbg-edit-events-list').on('click', '.bb-dbg-event-save', function() {
+        const card = jQuery(this).closest('.bb-vn-edit-event-card');
+        const msgIdx = parseInt(card.data('msg-idx'), 10);
+        const updateIdx = parseInt(card.data('update-idx'), 10);
+        const reason = card.find('.bb-edit-reason').val();
+        const emotion = card.find('.bb-edit-emotion').val();
+        const friendshipImpact = card.find('.bb-edit-friendship').val();
+        const romanceImpact = card.find('.bb-edit-romance').val();
+        const result = editSocialUpdate({ messageIndex: msgIdx, updateIndex: updateIdx, reason, emotion, friendshipImpact, romanceImpact });
+        if (result.ok) {
+            if (result.changed) {
+                notifySuccess('Событие обновлено. Статы пересчитаны.');
+                renderEditEventsList(msgIdx);
+            } else {
+                notifyInfo('Нет изменений.');
+            }
+        } else {
+            notifyError(result.error || 'Ошибка обновления.');
+        }
+    });
+
+    jQuery('#bb-dbg-edit-events-list').on('click', '.bb-dbg-event-delete', async function() {
+        const msgIdx = parseInt(jQuery(this).data('msg-idx'), 10);
+        const updateIdx = parseInt(jQuery(this).data('update-idx'), 10);
+        let confirmed = false;
+        try {
+            confirmed = await SillyTavern.getContext().callPopup(
+                `<h3>Удалить событие?</h3><p>Это событие будет удалено, а статы пересчитаны.</p>`,
+                'confirm'
+            );
+        } catch (error) { confirmed = false; }
+        if (!confirmed) return;
+        const result = deleteSocialUpdate({ messageIndex: msgIdx, updateIndex: updateIdx });
+        if (result.ok) {
+            notifySuccess('Событие удалено. Статы пересчитаны.');
+            renderEditEventsList(msgIdx);
+        } else {
+            notifyError(result.error || 'Ошибка удаления.');
+        }
+    });
+
+    window['bbEditLoadEventsForMessage'] = function(msgIdx) {
+        jQuery('#bb-dbg-edit-msg-idx').val(msgIdx);
+        renderEditEventsList(msgIdx);
+    };
+
     jQuery('#bb-social-export-btn').on('click', () => {
         bindActivePersonaState();
         recalculateAllStats(false);
@@ -734,4 +852,13 @@ export function setupExtensionSettings() {
     jQuery('#bb-social-clear-log-btn').on('click', wipeGlobalLog);
     jQuery('#bb-social-wipe-btn').on('click', wipeAllSocialData);
     renderMergeSuggestionsList();
+}
+
+export function applyMomentRenderClasses() {
+    const s = extension_settings[MODULE_NAME];
+    const hud = document.getElementById('bb-social-hud');
+    if (!hud) return;
+
+    hud.classList.toggle('bb-hud-moment-antialiased', s.momentAntialiased !== false);
+    hud.classList.toggle('bb-hud-moment-force-gpu', s.momentForceGPU === true);
 }

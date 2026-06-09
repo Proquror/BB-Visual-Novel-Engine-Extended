@@ -21,6 +21,8 @@ export const DEFAULT_SETTINGS = {
     vnReplyLength: 'medium',
     friendshipImpactValues: { ...DEFAULT_IMPACT_VALUES },
     romanceImpactValues: { ...DEFAULT_IMPACT_VALUES },
+    momentAntialiased: true,
+    momentForceGPU: false,
 };
 
 export function normalizeVnReplyLength(value = '') {
