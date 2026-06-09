@@ -2089,6 +2089,8 @@ function filterStaleSceneUpdates(activeUpdates = [], msg = null, idx = -1, chat 
 }
 
 export function getCombinedSocial() {
+    const override = chat_metadata['bb_vn_prompt_override'];
+    if (typeof override === 'string' && override.trim()) return override;
     const { scopeState, aliasSet } = bindActivePersonaState();
     let combinedStr = SOCIAL_PROMPT;
     const characters = getPromptRelevantCharacters(scopeState, aliasSet);
@@ -2165,7 +2167,8 @@ export function injectCombinedSocialPrompt() {
         }
         bindActivePersonaState();
         const useMacroMode = extension_settings[MODULE_NAME]?.useMacro === true;
-        const promptText = useMacroMode ? '' : getCombinedSocial();
+        const override = chat_metadata['bb_vn_prompt_override'];
+        const promptText = useMacroMode ? '' : (typeof override === 'string' && override.trim() ? override : getCombinedSocial());
         setExtensionPrompt('bb_social_injector', promptText, extension_prompt_types.IN_CHAT, 1, false, extension_prompt_roles.SYSTEM);
     } catch (e) { console.error("[BB VN] Ошибка инъекции:", e); }
 }
@@ -2336,6 +2339,8 @@ export function appendCharacterMemory(charStats, delta, reason, moodlet = '', op
         tone: getMemoryTone(delta),
         moodlet: sanitizeMoodlet(moodlet),
     };
+    if (options.msgIndex !== undefined) memory.msgIndex = options.msgIndex;
+    if (options.updateIdx !== undefined) memory.updateIdx = options.updateIdx;
     const memoryKey = buildMemoryEntryDedupKey(memory);
     const hasDuplicate = !options?.allowDuplicate && charStats.memories[bucket].some(entry => buildMemoryEntryDedupKey(entry) === memoryKey);
     if (memoryKey && hasDuplicate) return;
@@ -2354,10 +2359,18 @@ export function maybeAddStoryMoment(moment) {
     return moment;
 }
 
-export function addGlobalLog(type, text, timeString) {
+export function addGlobalLog(type, text, timeString, sourceMeta = {}) {
     if (!chat_metadata['bb_vn_global_log']) chat_metadata['bb_vn_global_log'] = [];
     const time = timeString || new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    chat_metadata['bb_vn_global_log'].push({ time, type, text });
+    const entry = { time, type, text };
+    if (sourceMeta.msgIndex !== undefined) entry.msgIndex = sourceMeta.msgIndex;
+    if (sourceMeta.updateIdx !== undefined) entry.updateIdx = sourceMeta.updateIdx;
+    if (sourceMeta.charName) entry.charName = sourceMeta.charName;
+    if (sourceMeta.reason) entry.rawReason = sourceMeta.reason;
+    if (sourceMeta.friendshipImpact) entry.rawFriendshipImpact = sourceMeta.friendshipImpact;
+    if (sourceMeta.romanceImpact) entry.rawRomanceImpact = sourceMeta.romanceImpact;
+    if (sourceMeta.emotion) entry.rawEmotion = sourceMeta.emotion;
+    chat_metadata['bb_vn_global_log'].push(entry);
     if (chat_metadata['bb_vn_global_log'].length > 100) chat_metadata['bb_vn_global_log'].shift();
 }
 
@@ -2816,7 +2829,7 @@ export function recalculateAllStats(isNewMessage = false) {
                 return 0;
             };
 
-            activeUpdates.forEach(update => {
+            activeUpdates.forEach((update, activeUpdateIdx) => {
                 if (update.scope && !aliasSet.has(update.scope)) return;
                 if (!update.scope || update.scope !== scopeKey) {
                     update.scope = scopeKey;
@@ -2929,7 +2942,7 @@ export function recalculateAllStats(isNewMessage = false) {
                     });
                 }
                 recordedImpacts.forEach(impact => {
-                    appendCharacterMemory(newStats[charName], impact.delta, update.reason || "", moodlet, { allowDuplicate: isDebugInjected });
+                    appendCharacterMemory(newStats[charName], impact.delta, update.reason || "", moodlet, { allowDuplicate: isDebugInjected, msgIndex: idx, updateIdx: activeUpdateIdx });
                 });
 
                 const previousTier = getTierInfo(previousAffinity).label;
@@ -2954,13 +2967,13 @@ export function recalculateAllStats(isNewMessage = false) {
                             const momentType = impact.kind === 'romance'
                                 ? (impact.delta > 0 ? 'romance-positive' : 'romance-negative')
                                 : (impact.delta > 0 ? 'soft-positive' : 'soft-negative');
-                            const moment = maybeAddStoryMoment({ type: momentType, char: charName, title: shift.full, text: `${charName}: ${update.reason}` });
+                            const moment = maybeAddStoryMoment({ type: momentType, char: charName, title: shift.full, text: `${charName}: ${update.reason}`, msgIndex: idx, updateIdx: activeUpdateIdx });
                             if (impact === dominantImpact) toastMoment = pickToastMoment(toastMoment, moment);
                             if (idx === chat.length - 1) queueLiveToastCandidate(liveToastCandidates, scopeKey, `${messageMeta}|${impact.kind}|${impact.delta}|soft`, moment);
                         }
 
                         if (Math.abs(impact.delta) >= 15) {
-                            const moment = maybeAddStoryMoment({ type: impact.delta > 0 ? 'deep-positive' : 'deep-negative', char: charName, title: 'Незабываемое событие', text: `${charName}: ${update.reason}` });
+                            const moment = maybeAddStoryMoment({ type: impact.delta > 0 ? 'deep-positive' : 'deep-negative', char: charName, title: 'Незабываемое событие', text: `${charName}: ${update.reason}`, msgIndex: idx, updateIdx: activeUpdateIdx });
                             if (impact === dominantImpact) toastMoment = pickToastMoment(toastMoment, moment);
                             if (idx === chat.length - 1) queueLiveToastCandidate(liveToastCandidates, scopeKey, `${messageMeta}|${impact.kind}|${impact.delta}|deep`, moment);
                         }
@@ -2978,7 +2991,15 @@ export function recalculateAllStats(isNewMessage = false) {
                     let timeStr = "";
                     if (msg.send_date) { try { timeStr = new Date(msg.send_date).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); } catch(e) {} }
                     const logText = `<div class="bb-glog-main" style="display: flex; flex-direction: column; align-items: flex-start; gap: 6px; width: 100%;"><span class="bb-glog-char">${escapeHtml(charName)}</span>${moodlet ? `<span class="bb-glog-delta" style="align-self: flex-start;">${escapeHtml(moodlet)}</span>` : ''}</div>${update.reason ? `<div class="bb-glog-reason" style="margin-top: 4px;">${escapeHtml(update.reason)}</div>` : ''}<div style="display:flex; flex-wrap:wrap; margin-top:6px;">${pointsHtml}</div>`;
-                    addGlobalLog(logType, logText, timeStr);
+                    addGlobalLog(logType, logText, timeStr, {
+                        msgIndex: idx,
+                        updateIdx: activeUpdateIdx,
+                        charName: charName,
+                        reason: update.reason || '',
+                        friendshipImpact: update.friendship_impact || update.impact_level || '',
+                        romanceImpact: update.romance_impact || update.romantic_impact || update.love_impact || '',
+                        emotion: currentEmotion || '',
+                    });
                 }
             });
         }
@@ -2989,8 +3010,13 @@ export function recalculateAllStats(isNewMessage = false) {
         if (!stats.core_traits) stats.core_traits = []; 
         let posTraitsCount = 0, negTraitsCount = 0, legacyTraitsCount = 0;
         stats.core_traits.forEach(t => { if (t.type === 'positive') posTraitsCount++; else if (t.type === 'negative') negTraitsCount++; else legacyTraitsCount++; });
-        const posToArchive = (posTraitsCount * 5) + (legacyTraitsCount * 5);
-        const negToArchive = (negTraitsCount * 5) + (legacyTraitsCount * 5);
+        // Only archive deep memories if there are enough to fill the trait quota.
+        // If traits were added manually (not via crystallization), there may not be
+        // enough deep memories — archiving them all would hide progress from the user.
+        const totalDeepPos = stats.memories.deep.filter(m => m.tone === 'positive').length;
+        const totalDeepNeg = stats.memories.deep.filter(m => m.tone === 'negative').length;
+        const posToArchive = totalDeepPos >= (posTraitsCount * 5) + (legacyTraitsCount * 5) ? (posTraitsCount * 5) + (legacyTraitsCount * 5) : 0;
+        const negToArchive = totalDeepNeg >= (negTraitsCount * 5) + (legacyTraitsCount * 5) ? (negTraitsCount * 5) + (legacyTraitsCount * 5) : 0;
         stats.memories.archive = [];
         const newDeep = [];
         let posArchived = 0, negArchived = 0;
@@ -3034,6 +3060,102 @@ export function recalculateAllStats(isNewMessage = false) {
     }
 
     if (newlyDiscoveredChars.length > 0) handleNewCharacterInterviews(newlyDiscoveredChars);
+}
+
+export function editSocialUpdate({ messageIndex, updateIndex, reason, emotion, friendshipImpact, romanceImpact } = {}) {
+    const chat = SillyTavern.getContext()?.chat;
+    if (!Array.isArray(chat) || messageIndex < 0 || messageIndex >= chat.length) {
+        return { ok: false, error: 'Неверный индекс сообщения' };
+    }
+
+    const msg = chat[messageIndex];
+    if (!msg) return { ok: false, error: 'Сообщение не найдено' };
+    if (!msg.extra) msg.extra = {};
+
+    const swipeId = msg.swipe_id || 0;
+    if (!msg.extra.bb_social_swipes) msg.extra.bb_social_swipes = {};
+    if (!Array.isArray(msg.extra.bb_social_swipes[swipeId])) {
+        return { ok: false, error: 'Нет событий у этого сообщения' };
+    }
+
+    const updates = msg.extra.bb_social_swipes[swipeId];
+    if (updateIndex < 0 || updateIndex >= updates.length) {
+        return { ok: false, error: 'Неверный индекс события' };
+    }
+
+    const update = updates[updateIndex];
+    let changed = false;
+
+    if (reason !== undefined && String(reason || '').trim() !== String(update.reason || '').trim()) {
+        update.reason = String(reason || '').trim();
+        changed = true;
+    }
+    if (emotion !== undefined && String(emotion || '').trim() !== String(update.emotion || '').trim()) {
+        update.emotion = String(emotion || '').trim();
+        changed = true;
+    }
+    if (friendshipImpact !== undefined && String(friendshipImpact || '').trim() !== String(update.friendship_impact || '').trim()) {
+        update.friendship_impact = String(friendshipImpact || '').trim();
+        changed = true;
+    }
+    if (romanceImpact !== undefined && String(romanceImpact || '').trim() !== String(update.romance_impact || '').trim()) {
+        update.romance_impact = String(romanceImpact || '').trim();
+        changed = true;
+    }
+
+    if (!changed) return { ok: true, changed: false };
+
+    if (!update.scope) update.scope = getCurrentPersonaScopeKey();
+
+    saveChatDebounced();
+    recalculateAllStats(false);
+    return { ok: true, changed: true };
+}
+
+export function getSocialUpdatesForMessage(messageIndex) {
+    const chat = SillyTavern.getContext()?.chat;
+    if (!Array.isArray(chat) || messageIndex < 0 || messageIndex >= chat.length) {
+        return [];
+    }
+    const msg = chat[messageIndex];
+    if (!msg?.extra?.bb_social_swipes) return [];
+    const swipeId = msg.swipe_id || 0;
+    return Array.isArray(msg.extra.bb_social_swipes[swipeId])
+        ? msg.extra.bb_social_swipes[swipeId].map((u, i) => ({
+            index: i,
+            name: u.name || '',
+            reason: u.reason || '',
+            emotion: u.emotion || '',
+            friendship_impact: u.friendship_impact || 'none',
+            romance_impact: u.romance_impact || 'none',
+            role_dynamic: u.role_dynamic || '',
+        }))
+        : [];
+}
+
+export function deleteSocialUpdate({ messageIndex, updateIndex } = {}) {
+    const chat = SillyTavern.getContext()?.chat;
+    if (!Array.isArray(chat) || messageIndex < 0 || messageIndex >= chat.length) {
+        return { ok: false, error: 'Неверный индекс сообщения' };
+    }
+
+    const msg = chat[messageIndex];
+    if (!msg) return { ok: false, error: 'Сообщение не найдено' };
+
+    const swipeId = msg.swipe_id || 0;
+    if (!msg.extra?.bb_social_swipes || !Array.isArray(msg.extra.bb_social_swipes[swipeId])) {
+        return { ok: false, error: 'Нет событий у этого сообщения' };
+    }
+
+    const updates = msg.extra.bb_social_swipes[swipeId];
+    if (updateIndex < 0 || updateIndex >= updates.length) {
+        return { ok: false, error: 'Неверный индекс события' };
+    }
+
+    const removed = updates.splice(updateIndex, 1);
+    saveChatDebounced();
+    recalculateAllStats(false);
+    return { ok: true, removed: removed[0] };
 }
 
 export function getTrendNarrative(history = []) {

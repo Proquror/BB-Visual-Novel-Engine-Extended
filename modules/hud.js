@@ -1,4 +1,7 @@
 /* global SillyTavern */
+const MEMORY_SHOW_LIMIT = 4;
+const MEMORY_SHOW_MORE = 4;
+
 import { chat_metadata, saveChatDebounced } from '../../../../../script.js';
 import { extension_settings } from '../../../../extensions.js';
 import { MODULE_NAME } from './constants.js';
@@ -12,6 +15,7 @@ import {
     normalizeTraitResponse
 } from './utils.js';
 import { syncToastContainerWithHud, notifySuccess, notifyInfo, notifyError, showTraitCrystallizedToast } from './toasts.js';
+import { applyMomentRenderClasses } from './settings.js';
 import { 
     getTierInfo, 
     getTrendNarrative, 
@@ -24,7 +28,10 @@ import {
     getCharacterProfile,
     updateCharacterProfile,
     renameCharacterRecord,
-    mergeCharacterRecords
+    mergeCharacterRecords,
+    editSocialUpdate,
+    deleteSocialUpdate,
+    injectCombinedSocialPrompt
 } from './social.js';
 import { cancelVnGeneration, crystallizeTraitFromMemories, generateCharacterDescription, isVnGenerationAbortError } from './generator.js';
 
@@ -95,12 +102,16 @@ function buildDeepMemoryDisplayItems(memories = []) {
             && ((currentTone === 'positive' && nextTone === 'negative') || (currentTone === 'negative' && nextTone === 'positive'));
 
         if (isDualTonePair) {
-            items.push({ text: currentText, tone: 'dual' });
+            const dualItem = { text: currentText, tone: 'dual' };
+            if (current?.msgIndex !== undefined) { dualItem.msgIndex = current.msgIndex; dualItem.updateIdx = current.updateIdx; }
+            items.push(dualItem);
             index++;
             continue;
         }
 
-        items.push({ text: currentText, tone: currentTone });
+        const singleItem = { text: currentText, tone: currentTone };
+        if (current?.msgIndex !== undefined) { singleItem.msgIndex = current.msgIndex; singleItem.updateIdx = current.updateIdx; }
+        items.push(singleItem);
     }
 
     return items;
@@ -110,10 +121,14 @@ function renderDeepMemoryPill(memory = {}) {
     const text = escapeHtml(memory?.text || '');
     const tone = String(memory?.tone || '');
     if (!text) return '';
+    const sourceData = memory?.msgIndex !== undefined ? `data-msg-idx="${memory.msgIndex}" data-update-idx="${memory.updateIdx}"` : '';
+    const editBtn = sourceData ? '<button type="button" class="bb-memory-edit-btn" title="Редактировать"><i class="fa-solid fa-pen-to-square"></i></button>' : '';
+    const deleteBtn = sourceData ? '<button type="button" class="bb-memory-delete-btn" title="Удалить"><i class="fa-solid fa-trash-can"></i></button>' : '';
+    const btns = (editBtn || deleteBtn) ? `<span class="bb-memory-pill-btns">${editBtn}${deleteBtn}</span>` : '';
     if (tone === 'dual') {
-        return `<div class="bb-memory-pill deep dual-tone" title="Противоречивое незабываемое событие"><span>${text}</span></div>`;
+        return `<div class="bb-memory-pill deep dual-tone" ${sourceData} title="Противоречивое незабываемое событие"><span>${text}</span>${btns}</div>`;
     }
-    return `<div class="bb-memory-pill deep ${tone}"><span>${text}</span></div>`;
+    return `<div class="bb-memory-pill deep ${tone}" ${sourceData}><span>${text}</span>${btns}</div>`;
 }
 
 function getCharacterInitials(charName = '') {
@@ -377,20 +392,110 @@ function queueCharacterEditorAvatarPreview(editor, immediate = false) {
     editor.data('bbAvatarPreviewTimer', timerId);
 }
 
+/**
+ * Smoothly scrolls to a target element inside the HUD after a CSS transition completes.
+ * Waits for `transitionend` on the `transitionEl` (e.g. .bb-char-body or .bb-char-editor),
+ * then calculates the scroll offset to center `targetSelector` inside `.bb-hud-content`.
+ * Falls back to a 300ms timeout if `transitionend` never fires.
+ */
+function scrollAfterTransition(transitionEl, targetSelector, card) {
+    if (!transitionEl) return;
+
+    const doScroll = () => {
+        // If targeting the card itself, use card[0] directly (find only searches descendants)
+        let target;
+        if (targetSelector === '.bb-char-card' && card) {
+            target = card[0];
+        } else {
+            target = (card && card.find(targetSelector)[0]) || transitionEl;
+        }
+        const scroller = document.querySelector('.bb-hud-content.active');
+        if (!target || !scroller) return;
+
+        const targetRect = target.getBoundingClientRect();
+        const scrollerRect = scroller.getBoundingClientRect();
+        const offset = targetRect.top - scrollerRect.top + scroller.scrollTop
+            - (scrollerRect.height / 2) + (targetRect.height / 2);
+        scroller.scrollTo({ top: offset, behavior: 'smooth' });
+    };
+
+    let done = false;
+    const finish = () => {
+        if (done) return;
+        done = true;
+        transitionEl.removeEventListener('transitionend', onEnd);
+        clearTimeout(fallback);
+        doScroll();
+    };
+
+    const onEnd = (e) => {
+        // Only react to the main animated property
+        if (e.target !== transitionEl) return;
+        if (e.propertyName === 'grid-template-rows' || e.propertyName === 'max-height') {
+            finish();
+        }
+    };
+
+    transitionEl.addEventListener('transitionend', onEnd);
+    // Fallback in case transitionend doesn't fire (e.g. no transition happened)
+    const fallback = setTimeout(finish, 300);
+}
+
 function setCharacterCardExpanded(card, shouldExpand, options = {}) {
-    void options;
     card.toggleClass('expanded', Boolean(shouldExpand));
     if (!shouldExpand) {
         card.removeClass('editor-open');
+        // Reset all "show more" sections back to default collapsed state
+        card.find('.bb-memory-show-more').each(function() {
+            const btn = jQuery(this);
+            const section = btn.closest('.bb-memory-section');
+            const total = parseInt(btn.attr('data-total') || '0', 10);
+            // Re-hide items beyond the limit
+            const allPills = section.find('.bb-memory-pill');
+            allPills.each(function(idx) {
+                if (idx >= MEMORY_SHOW_LIMIT) {
+                    jQuery(this).addClass('bb-memory-hidden');
+                }
+            });
+            // Reset button state
+            btn.removeClass('bb-memory-show-more-done');
+            btn.attr('data-shown', String(MEMORY_SHOW_LIMIT));
+            const remaining = total - MEMORY_SHOW_LIMIT;
+            if (remaining > 0) {
+                btn.html(`<i class="fa-solid fa-chevron-down"></i>ещё ${remaining}`);
+            }
+        });
+        // Smooth scroll to the card itself after collapse animation completes
+        scrollAfterTransition(card.find('.bb-char-body')[0], '.bb-char-card', card);
+    } else {
+        // Reset log-collapsed when expanding
+        card.removeClass('log-collapsed');
+        if (!options?.skipScroll) {
+            // Smooth scroll to the body after expand animation completes
+            scrollAfterTransition(card.find('.bb-char-body')[0], '.bb-char-body-inner', card);
+        }
     }
 }
 
 function setCharacterEditorOpen(card, shouldOpen, options = {}) {
     void options;
     if (shouldOpen) {
-        setCharacterCardExpanded(card, true, options);
+        setCharacterCardExpanded(card, true, { ...options, skipScroll: true });
         card.addClass('editor-open');
+        // Reset log-collapsed when editor opens
+        card.removeClass('log-collapsed');
         queueCharacterEditorAvatarPreview(card.children('.bb-char-editor'), true);
+        // Auto-resize description textarea
+        const descInput = card.find('.bb-edit-description-input')[0];
+        if (descInput) {
+            const resize = () => { descInput.style.height = 'auto'; descInput.style.height = descInput.scrollHeight + 'px'; };
+            descInput.removeEventListener('input', descInput._bbAutoResize);
+            descInput._bbAutoResize = resize;
+            descInput.addEventListener('input', resize);
+            setTimeout(resize, 0);
+        }
+        // Smooth scroll to the inline editor after it opens
+        scrollAfterTransition(card.find('.bb-char-editor-inline')[0] || card.find('.bb-char-editor')[0], '.bb-char-editor-inline', card);
         return;
     }
 
@@ -475,10 +580,10 @@ function buildCharacterCardHtml(charName = '') {
 
     const romanceHtml = romance !== 0 ? `
         <div class="bb-progress-wrapper bb-progress-wrapper-romance">
-            <div class="bb-progress-labels" style="color:#f472b6; position: relative; display: flex; justify-content: space-between; align-items: center;">
+            <div class="bb-progress-labels bb-progress-labels-romance">
                 <span>Неприязнь</span>
-                <span class="bb-label-center" style="position: absolute; left: 50%; transform: translateX(-50%); display: flex; align-items: center; white-space: nowrap;">
-                    <i class="fa-solid fa-heart" style="font-size:12px; margin-right: 4px;"></i>Влечение
+                <span class="bb-label-center">
+                    <i class="fa-solid fa-heart bb-romance-icon"></i>Влечение
                 </span>
                 <span>Любовь</span>
             </div>
@@ -490,12 +595,40 @@ function buildCharacterCardHtml(charName = '') {
     ` : '';
 
     const allDeepMemories = [...(memories.archive || []), ...(memories.deep || [])];
-    const softMemoriesHtml = (memories.soft || []).length > 0
-        ? [...memories.soft].reverse().map(memory => `<div class="bb-memory-pill ${memory.tone}"><span>${escapeHtml(memory.text)}</span></div>`).join('')
-        : '<i style="color:#64748b; font-size: 11px;">Пока нет мягких следов</i>';
-    const deepMemoriesHtml = allDeepMemories.length > 0
-        ? buildDeepMemoryDisplayItems(allDeepMemories).map(renderDeepMemoryPill).join('')
-        : '<i style="color:#64748b; font-size: 11px;">Ничего незабываемого</i>';
+    const softMemoriesFull = (memories.soft || []).length > 0
+        ? [...memories.soft].reverse().map(memory => {
+            const sourceData = memory.msgIndex !== undefined ? `data-msg-idx="${memory.msgIndex}" data-update-idx="${memory.updateIdx}"` : '';
+            return `<div class="bb-memory-pill ${memory.tone}" ${sourceData}><span>${escapeHtml(memory.text)}</span>${sourceData ? '<span class="bb-memory-pill-btns"><button type="button" class="bb-memory-edit-btn" title="Редактировать"><i class="fa-solid fa-pen-to-square"></i></button><button type="button" class="bb-memory-delete-btn" title="Удалить"><i class="fa-solid fa-trash-can"></i></button></span>' : ''}</div>`;
+        })
+        : [];
+    const softMemoriesHtml = softMemoriesFull.length > 0
+        ? softMemoriesFull.map((html, i) => {
+            if (i < MEMORY_SHOW_LIMIT) return html;
+            return html.replace('class="bb-memory-pill', 'class="bb-memory-pill bb-memory-hidden');
+        }).join('')
+        : '<i class="bb-empty-memory-msg">Пока нет мягких следов</i>';
+    const softMemoriesShowMore = softMemoriesFull.length > MEMORY_SHOW_LIMIT
+        ? (() => {
+            const remaining = softMemoriesFull.length - MEMORY_SHOW_LIMIT;
+            return `<button type="button" class="bb-memory-show-more" data-shown="${MEMORY_SHOW_LIMIT}" data-step="${MEMORY_SHOW_MORE}" data-total="${softMemoriesFull.length}"><i class="fa-solid fa-chevron-down"></i>ещё ${remaining}</button>`;
+        })()
+        : '';
+
+    const deepMemoriesFull = allDeepMemories.length > 0
+        ? buildDeepMemoryDisplayItems(allDeepMemories).map(renderDeepMemoryPill)
+        : [];
+    const deepMemoriesHtml = deepMemoriesFull.length > 0
+        ? deepMemoriesFull.map((html, i) => {
+            if (i < MEMORY_SHOW_LIMIT) return html;
+            return html.replace('class="bb-memory-pill', 'class="bb-memory-pill bb-memory-hidden');
+        }).join('')
+        : '<i class="bb-empty-memory-msg">Ничего незабываемого</i>';
+    const deepMemoriesShowMore = deepMemoriesFull.length > MEMORY_SHOW_LIMIT
+        ? (() => {
+            const remaining = deepMemoriesFull.length - MEMORY_SHOW_LIMIT;
+            return `<button type="button" class="bb-memory-show-more" data-shown="${MEMORY_SHOW_LIMIT}" data-step="${MEMORY_SHOW_MORE}" data-total="${deepMemoriesFull.length}"><i class="fa-solid fa-chevron-down"></i>ещё ${remaining}</button>`;
+        })()
+        : '';
 
     const coreTraits = stats.core_traits || [];
     let posTraitsCount = 0;
@@ -505,27 +638,24 @@ function buildCharacterCardHtml(charName = '') {
             if (traitItem.type === 'positive') posTraitsCount++;
             else if (traitItem.type === 'negative') negTraitsCount++;
 
-            const color = traitItem.type === 'positive'
-                ? '#4ade80'
-                : (traitItem.type === 'negative' ? '#fb7185' : '#fbbf24');
-            const background = traitItem.type === 'positive'
-                ? 'rgba(74, 222, 128, 0.12)'
-                : (traitItem.type === 'negative' ? 'rgba(244, 63, 94, 0.12)' : 'rgba(251, 191, 36, 0.12)');
+            const traitTypeClass = traitItem.type === 'positive' || traitItem.type === 'negative'
+                ? traitItem.type
+                : 'legacy';
 
             let traitText = escapeHtml(traitItem.trait);
             const separatorIndex = traitText.indexOf(':');
             if (separatorIndex !== -1 && separatorIndex < 50) {
                 const name = traitText.substring(0, separatorIndex).trim();
                 const description = traitText.substring(separatorIndex + 1).trim();
-                traitText = `<b style="color:inherit; filter:brightness(1.5); text-transform:uppercase; font-size:10px; margin-right:4px; letter-spacing:0.5px;">${name}:</b> ${description}`;
+                traitText = `<b class="bb-trait-name-bold">${name}:</b> <span class="bb-trait-description">${description}</span>`;
             }
 
-            return `<div class="bb-memory-pill deep" style="border-color:${color}; color:${color}; background:${background};"><i class="fa-solid fa-gem"></i> <span>${traitText}</span></div>`;
+            return `<div class="bb-memory-pill deep ${traitTypeClass} trait" data-trait-index="${coreTraits.indexOf(traitItem)}" data-char="${escapeHtml(charName)}"><i class="fa-solid fa-gem"></i> <span>${traitText}</span><span class="bb-memory-pill-btns"><button type="button" class="bb-memory-edit-btn bb-trait-edit-btn" data-trait-index="${coreTraits.indexOf(traitItem)}" data-char="${escapeHtml(charName)}" title="Редактировать черту"><i class="fa-solid fa-pen-to-square"></i></button><button type="button" class="bb-memory-delete-btn bb-trait-delete-btn" data-trait-index="${coreTraits.indexOf(traitItem)}" data-char="${escapeHtml(charName)}" title="Удалить черту"><i class="fa-solid fa-trash-can"></i></button></span></div>`;
         }).join('')
         : '';
 
-    const deepPosCount = (memories.deep || []).filter(memory => memory.tone === 'positive').length;
-    const deepNegCount = (memories.deep || []).filter(memory => memory.tone === 'negative').length;
+    const deepPosCount = (memories.deep || []).filter(m => m.tone === 'positive').length;
+    const deepNegCount = (memories.deep || []).filter(m => m.tone === 'negative').length;
 
     let crystalTrackerHtml = '';
     if (deepPosCount > 0 || posTraitsCount > 0 || deepNegCount > 0 || negTraitsCount > 0) {
@@ -558,7 +688,9 @@ function buildCharacterCardHtml(charName = '') {
         && latestDeltas.romance === 0;
     const scorelineClass = [
         'bb-char-summary-scoreline',
-        hasRomanceMetric ? 'has-romance' : 'is-single',
+        showAffinityMetric && showRomanceMetric ? 'has-romance' : '',
+        showAffinityMetric && !showRomanceMetric ? 'is-single' : '',
+        !showAffinityMetric && showRomanceMetric ? 'romance-only' : '',
         isNeutralScoreline ? 'is-neutral' : '',
     ].filter(Boolean).join(' ');
 
@@ -569,11 +701,11 @@ function buildCharacterCardHtml(charName = '') {
                     <div class="bb-char-avatar-column">
                         ${avatarHtml}
                         <div class="bb-char-avatar-ornament" aria-hidden="true"><span></span></div>
+                        <button type="button" class="bb-char-edit-btn" data-char="${escapeHtml(charName)}" title="Настройки персонажа"><i class="fa-solid fa-sliders"></i></button>
                     </div>
                     <div class="bb-char-summary-main">
                         <div class="bb-char-summary-headline">
                             <div class="bb-char-name bb-char-name-compact">${escapeHtml(charName)}</div>
-                            <button type="button" class="bb-char-edit-btn" data-char="${escapeHtml(charName)}" title="Настройки персонажа"><i class="fa-solid fa-sliders"></i></button>
                         </div>
                         <div class="bb-char-summary-status-row">
                             <span class="bb-char-direction bb-char-direction-compact"><i class="fa-solid fa-eye"></i> отношение к вам</span>
@@ -583,14 +715,14 @@ function buildCharacterCardHtml(charName = '') {
                         <div class="${scorelineClass}">
                             ${showAffinityMetric ? `
                                 <div class="bb-char-score-stack">
-                                    ${renderScoreDeltaBadge(latestDeltas.affinity, 'affinity')}
                                     <span class="bb-char-score bb-char-score-compact" style="color:${tier.color};">${affinity > 0 ? '+' : ''}${affinity}</span>
+                                    ${renderScoreDeltaBadge(latestDeltas.affinity, 'affinity')}
                                 </div>
                             ` : ''}
                             ${showRomanceMetric ? `
                                 <div class="bb-char-score-stack romance">
-                                    ${renderScoreDeltaBadge(latestDeltas.romance, 'romance')}
                                     <span class="bb-char-score bb-char-score-compact bb-char-score-romance">${romance > 0 ? '+' : ''}${romance}</span>
+                                    ${renderScoreDeltaBadge(latestDeltas.romance, 'romance')}
                                 </div>
                             ` : ''}
                             <div class="bb-char-scoreline-ornament" aria-hidden="true"><span></span></div>
@@ -604,12 +736,13 @@ function buildCharacterCardHtml(charName = '') {
                 </div>
             </div>
             <div class="bb-char-body">
+                <div class="bb-char-body-inner">
                 <div class="bb-char-route-meta">
                     <div class="bb-char-meta-card"><span class="bb-char-meta-label">Последний сдвиг</span><strong style="color: ${lastShift ? lastShift.color : '#f8fafc'};">${escapeHtml(lastShift ? lastShift.full : 'Без сдвига')}</strong></div>
-                    <div class="bb-char-meta-card"><span class="bb-char-meta-label">Динамика</span><strong style="color: #cbd5e1;">${escapeHtml(getTrendNarrative(stats.history || []))}</strong></div>
+                    <div class="bb-char-meta-card"><span class="bb-char-meta-label">Динамика</span><strong class="bb-meta-value-dynamics">${escapeHtml(getTrendNarrative(stats.history || []))}</strong></div>
                 </div>
                 <div class="bb-char-detail-block">
-                    <div class="bb-progress-wrapper"><div class="bb-progress-labels" style="position: relative; display: flex; justify-content: space-between; align-items: center;"><span>Ненависть</span><span style="position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap;">Равнодушие</span><span>Семья</span></div><div class="bb-progress-bg"><div class="bb-progress-center-line"></div><div class="bb-progress-fill" style="${barStyle}"></div></div></div>
+                    <div class="bb-progress-wrapper"><div class="bb-progress-labels"><span>Ненависть</span><span class="bb-label-center">Равнодушие</span><span>Семья</span></div><div class="bb-progress-bg"><div class="bb-progress-center-line"></div><div class="bb-progress-fill" style="${barStyle}"></div></div></div>
                     ${romanceHtml}
                 </div>
                 <div class="bb-char-insight-grid">
@@ -617,12 +750,17 @@ function buildCharacterCardHtml(charName = '') {
                     <div class="bb-char-insight-tile"><span class="bb-char-insight-label">Глубокие следы</span><strong>${allDeepMemories.length}</strong></div>
                 </div>
                 ${(memories.soft.length > 0 || allDeepMemories.length > 0 || coreTraits.length > 0) ? `<div class="bb-char-log">
-                    ${coreTraits.length > 0 ? `<div class="bb-memory-section" style="padding-top: 4px; margin-bottom: 8px;"><div class="bb-memory-title" style="color:#fbbf24;">Черты характера</div><div class="bb-memory-list bb-memory-list-deep">${traitsHtml}</div></div>` : ''}
-                    ${memories.soft.length > 0 ? `<div class="bb-memory-section" style="padding-top: 4px;"><div class="bb-memory-title">Мягкие следы</div><div class="bb-memory-list">${softMemoriesHtml}</div></div>` : ''}
-                    ${allDeepMemories.length > 0 ? `<div class="bb-memory-section"><div class="bb-memory-title">Незабываемые события</div><div class="bb-memory-list bb-memory-list-deep">${deepMemoriesHtml}</div></div>` : ''}
+                    ${coreTraits.length > 0 ? `<div class="bb-memory-section bb-memory-section-traits"><div class="bb-memory-title bb-memory-title-traits">Черты характера</div><div class="bb-memory-list bb-memory-list-deep">${traitsHtml}</div></div>` : ''}
+                    ${softMemoriesFull.length > 0 ? `<div class="bb-memory-section bb-memory-section-soft"><div class="bb-memory-title">Мягкие следы</div><div class="bb-memory-list">${softMemoriesHtml}</div>${softMemoriesShowMore}</div>` : ''}
+                    ${deepMemoriesFull.length > 0 ? `<div class="bb-memory-section"><div class="bb-memory-title">Незабываемые события</div><div class="bb-memory-list bb-memory-list-deep">${deepMemoriesHtml}</div>${deepMemoriesShowMore}</div>` : ''}
                 </div>` : ''}
+                </div>
             </div>
-            <div class="bb-char-editor" style="cursor: default; border-top: 1px solid rgba(255,255,255,0.06); border-radius: 0 0 22px 22px; margin: 0; background: rgba(0,0,0,0.2);">
+            <div class="bb-char-editor bb-char-editor-inline">
+                <div class="bb-editor-top-bar">
+                    <button type="button" class="bb-editor-minimize-btn" title="Свернуть редактор"><i class="fa-solid fa-chevron-up"></i></button>
+                    <button type="button" class="bb-editor-collapse-btn" title="Свернуть журнал и редактор"><i class="fa-solid fa-xmark"></i></button>
+                </div>
                 <div class="bb-editor-title">Настройки персонажа</div>
                 <div class="bb-editor-hint">Здесь можно задать стартовые значения, аватар и профиль персонажа.</div>
                 <label class="bb-editor-name-field">
@@ -636,38 +774,589 @@ function buildCharacterCardHtml(charName = '') {
                         </div>
                         <input type="hidden" class="bb-edit-avatar-source" value="${escapeHtml(profile.avatarSource || profile.avatar)}">
                         <input type="hidden" class="bb-edit-avatar-data" value="${escapeHtml(profile.avatar)}">
-                        <input type="file" class="bb-avatar-upload-input" accept="image/*" style="display:none;">
+                        <input type="file" class="bb-avatar-upload-input bb-avatar-upload-input" accept="image/*">
                         <div class="bb-editor-actions bb-editor-actions-tight">
-                            <button type="button" class="menu_button bb-btn-upload-avatar" data-char="${escapeHtml(charName)}"><i class="fa-solid fa-image"></i>&ensp;Аватар</button>
-                            <button type="button" class="menu_button bb-btn-clear-avatar" ${profile.avatar ? '' : 'disabled'}><i class="fa-solid fa-trash"></i>&ensp;Очистить</button>
+                            <button type="button" class="bb-btn-upload-avatar" data-char="${escapeHtml(charName)}"><i class="fa-solid fa-image"></i>&ensp;Аватар</button>
+                            <button type="button" class="bb-btn-clear-avatar" ${profile.avatar ? '' : 'disabled'}><i class="fa-solid fa-trash"></i>&ensp;Очистить</button>
                         </div>
                     </div>
                     <div class="bb-avatar-editor-panel">
-                        <div class="bb-editor-hint" style="margin-bottom: 8px;">Выберите, какая часть изображения видна на карточке.</div>
+                        <div class="bb-editor-hint bb-editor-hint-spaced">Выберите, какая часть изображения видна на карточке.</div>
                         <label class="bb-slider-field"><span>Фокус по X</span><input type="range" min="0" max="100" step="1" class="bb-avatar-focus-x" value="${Number(profile.avatarCrop?.x ?? 50)}"></label>
                         <label class="bb-slider-field"><span>Фокус по Y</span><input type="range" min="0" max="100" step="1" class="bb-avatar-focus-y" value="${Number(profile.avatarCrop?.y ?? 50)}"></label>
                         <label class="bb-slider-field"><span>Масштаб</span><input type="range" min="100" max="320" step="1" class="bb-avatar-focus-zoom" value="${Number(profile.avatarCrop?.zoom ?? 100)}"></label>
                     </div>
                 </div>
-                <div style="display:flex; gap: 8px; margin-bottom: 10px;"><div style="flex:1;"><span style="font-size: 9px; color:#94a3b8; text-transform:uppercase;">База доверия:</span><input type="number" class="text_pole bb-edit-base-input" value="${baseAffinity}" style="width:100%; box-sizing:border-box;"></div><div style="flex:1;"><span style="font-size: 9px; color:#f472b6; text-transform:uppercase;">База романтики:</span><input type="number" class="text_pole bb-edit-romance-input" value="${baseRomance}" style="width:100%; box-sizing:border-box;"></div></div>
-                <label class="checkbox_label" style="margin-bottom: 10px;"><input type="checkbox" class="bb-edit-platonic-cb" ${isPlatonic ? 'checked' : ''}><span style="font-size: 11px; color:#fca5a5;">Строго платонически (блокирует флирт)</span></label>
+                <div class="bb-editor-base-row"><div><span class="bb-editor-label-sm bb-editor-label-affinity">База доверия:</span><input type="number" class="text_pole bb-edit-base-input bb-editor-base-input" value="${baseAffinity}"></div><div><span class="bb-editor-label-sm bb-editor-label-romance">База романтики:</span><input type="number" class="text_pole bb-edit-romance-input bb-editor-base-input" value="${baseRomance}"></div></div>
+                <label class="checkbox_label bb-editor-platonic-label"><input type="checkbox" class="bb-edit-platonic-cb" ${isPlatonic ? 'checked' : ''}><span class="bb-editor-platonic-text">Строго платонически (блокирует флирт)</span></label>
                 <div class="bb-editor-section">
                     <div class="bb-editor-title">Описание персонажа</div>
-                    <textarea class="text_pole bb-edit-description-input" rows="8" style="width:100%; min-height: 180px; resize: vertical;">${escapeHtml(profile.description)}</textarea>
+                    <textarea class="text_pole bb-edit-description-input" rows="8">${escapeHtml(profile.description)}</textarea>
                     <input type="hidden" class="bb-edit-generated-description" value="${escapeHtml(generatedDescription)}">
-                    <div class="bb-editor-actions bb-editor-actions-tight" style="margin-top: 8px;">
-                        <button type="button" class="menu_button bb-btn-generate-description" data-char="${escapeHtml(charName)}"><i class="fa-solid fa-wand-magic-sparkles"></i>&ensp;По шаблону</button>
-                        <button type="button" class="menu_button bb-btn-cancel-description-generation" style="display:none;"><i class="fa-solid fa-xmark"></i>&ensp;Отмена</button>
-                        <button type="button" class="menu_button bb-btn-clear-description"><i class="fa-solid fa-eraser"></i>&ensp;Очистить</button>
+                    <div class="bb-editor-actions bb-editor-actions-tight bb-editor-actions-spaced">
+                        <button type="button" class="bb-btn-generate-description" data-char="${escapeHtml(charName)}"><i class="fa-solid fa-wand-magic-sparkles"></i>&ensp;По шаблону</button>
+                        <button type="button" class="bb-btn-cancel-description-generation bb-btn-cancel-hidden"><i class="fa-solid fa-xmark"></i>&ensp;Отмена</button>
+                        <button type="button" class="bb-btn-clear-description"><i class="fa-solid fa-eraser"></i>&ensp;Очистить</button>
+                        <button type="button" class="bb-btn-hide-char" data-char="${escapeHtml(charName)}"><i class="fa-solid fa-eye-slash"></i>&ensp;Скрыть</button>
                     </div>
                 </div>
-                <div class="bb-editor-actions"><button class="menu_button bb-btn-save-char" data-char="${escapeHtml(charName)}" style="flex:1;"><i class="fa-solid fa-check"></i>&ensp;Сохранить</button><button class="menu_button bb-btn-hide-char" data-char="${escapeHtml(charName)}" style="flex:1; background: rgba(239,68,68,0.15); color: #f87171; border-color: rgba(239,68,68,0.35);"><i class="fa-solid fa-eye-slash"></i>&ensp;Скрыть</button></div>
+                <div class="bb-editor-actions"><button class="bb-btn-save-char" data-char="${escapeHtml(charName)}"><i class="fa-solid fa-check"></i>&ensp;Сохранить</button></div>
             </div>
         </div>
     `;
 }
 
+function injectInlineEditStyles() {
+    // All styles moved to style.css
+    if (document.getElementById('bb-inline-edit-styles')) return;
+    const style = document.createElement('style');
+    style.id = 'bb-inline-edit-styles';
+    style.textContent = '';
+    document.head.appendChild(style);
+}
+
+function bindGlobalLogEditHandlers() {
+    jQuery('.bb-glog-edit-btn').off('click').on('click', function(e) {
+        e.stopPropagation();
+        const btn = jQuery(this);
+        const logItem = btn.closest('.bb-glog-item');
+        const msgIndex = parseInt(btn.attr('data-msg-idx'), 10);
+        const updateIdx = parseInt(btn.attr('data-update-idx'), 10);
+        const logIdx = parseInt(logItem.attr('data-log-idx'), 10);
+        const logs = chat_metadata['bb_vn_global_log'] || [];
+        const logEntry = logs[logIdx];
+
+        if (logItem.hasClass('editing')) return;
+        logItem.addClass('editing');
+
+        const currentReason = logEntry?.rawReason || '';
+        const currentFriendship = logEntry?.rawFriendshipImpact || '';
+        const currentRomance = logEntry?.rawRomanceImpact || '';
+        const currentEmotion = logEntry?.rawEmotion || '';
+
+        const impactOptions = [
+            { value: '', label: '—' },
+            { value: 'none', label: 'Нет' },
+            { value: 'minor_positive', label: 'Слабый +' },
+            { value: 'minor_negative', label: 'Слабый -' },
+            { value: 'major_positive', label: 'Сильный +' },
+            { value: 'major_negative', label: 'Сильный -' },
+            { value: 'life_changing', label: 'Жизнеизм. +' },
+            { value: 'unforgivable', label: 'Непростит. -' },
+        ];
+
+        const buildOptions = (selected) => impactOptions.map(o =>
+            `<option value="${o.value}" ${o.value === selected ? 'selected' : ''}>${o.label}</option>`
+        ).join('');
+
+        const editFormHtml = `
+            <div class="bb-glog-edit-form">
+                <label class="bb-edit-field"><span>Описание:</span><textarea class="text_pole bb-edit-reason" rows="1" placeholder="Описание события">${escapeHtml(currentReason)}</textarea></label>
+                <div class="bb-edit-fields-row">
+                    <label class="bb-edit-field"><span>🤝 Доверие:</span><select class="text_pole bb-edit-friendship">${buildOptions(currentFriendship)}</select></label>
+                    <label class="bb-edit-field"><span>💖 Влечение:</span><select class="text_pole bb-edit-romance">${buildOptions(currentRomance)}</select></label>
+                </div>
+                <label class="bb-edit-field"><span>Эмоция:</span><input type="text" class="text_pole bb-edit-emotion" value="${escapeHtml(currentEmotion)}" placeholder="эмоция персонажа"></label>
+                <div class="bb-glog-edit-actions">
+                    <button type="button" class="bb-glog-save-btn" data-msg-idx="${msgIndex}" data-update-idx="${updateIdx}"><i class="fa-solid fa-check"></i><span>Сохранить</span></button>
+                    <button type="button" class="bb-glog-cancel-btn"><i class="fa-solid fa-xmark"></i><span>Отмена</span></button>
+                </div>
+            </div>
+        `;
+
+        logItem.find('.bb-glog-text').hide();
+        btn.hide();
+        logItem.append(editFormHtml);
+
+        // Auto-resize textarea to fit content
+        const reasonTextarea = logItem.find('.bb-edit-reason')[0];
+        if (reasonTextarea) {
+            const autoResize = () => {
+                reasonTextarea.style.height = 'auto';
+                reasonTextarea.style.height = reasonTextarea.scrollHeight + 'px';
+            };
+            autoResize();
+            jQuery(reasonTextarea).on('input', autoResize);
+        }
+
+        logItem.find('.bb-glog-cancel-btn').on('click', function() {
+            logItem.removeClass('editing');
+            logItem.find('.bb-glog-edit-form').remove();
+            logItem.find('.bb-glog-text').show();
+            btn.show();
+        });
+
+        logItem.find('.bb-glog-save-btn').on('click', function() {
+            const reason = String(logItem.find('.bb-edit-reason').val() || '').trim();
+            const friendshipImpact = String(logItem.find('.bb-edit-friendship').val() || '').trim();
+            const romanceImpact = String(logItem.find('.bb-edit-romance').val() || '').trim();
+            const emotion = String(logItem.find('.bb-edit-emotion').val() || '').trim();
+
+            const result = editSocialUpdate({
+                messageIndex: msgIndex,
+                updateIndex: updateIdx,
+                reason,
+                friendshipImpact,
+                romanceImpact,
+                emotion,
+            });
+
+            if (result?.ok) {
+                notifySuccess(result.changed ? 'Событие обновлено!' : 'Без изменений.');
+            } else {
+                notifyError(result?.error || 'Ошибка при обновлении события.');
+            }
+        });
+    });
+}
+
+function bindMemoryPillEditHandlers() {
+    jQuery('.bb-memory-pill .bb-memory-edit-btn').off('click').on('click', function(e) {
+        e.stopPropagation();
+        const btn = jQuery(this);
+        const pill = btn.closest('.bb-memory-pill');
+        const msgIndex = parseInt(pill.attr('data-msg-idx'), 10);
+        const updateIdx = parseInt(pill.attr('data-update-idx'), 10);
+        const textSpan = pill.find('span').first();
+        const currentText = textSpan.text();
+
+        if (pill.hasClass('editing')) return;
+        pill.addClass('editing');
+        pill.find('.bb-memory-pill-btns').hide();
+        textSpan.hide();
+
+        const editHtml = `<div class="bb-memory-inline-edit">
+            <textarea class="text_pole bb-memory-edit-text" rows="1">${escapeHtml(currentText)}</textarea>
+            <div class="bb-inline-edit-actions">
+                <button type="button" class="bb-memory-save-btn"><i class="fa-solid fa-check"></i></button>
+                <button type="button" class="bb-memory-cancel-btn"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+        </div>`;
+        pill.append(editHtml);
+
+        const editTextarea = pill.find('.bb-memory-edit-text')[0];
+        jQuery(editTextarea).on('input', function() {
+            this.style.height = 'auto';
+            this.style.height = this.scrollHeight + 'px';
+        });
+        setTimeout(() => {
+            editTextarea.style.height = 'auto';
+            editTextarea.style.height = editTextarea.scrollHeight + 'px';
+        }, 0);
+
+        pill.find('.bb-memory-cancel-btn').on('click', function() {
+            pill.removeClass('editing');
+            pill.find('.bb-memory-inline-edit').remove();
+            textSpan.show();
+            pill.find('.bb-memory-pill-btns').show();
+        });
+
+        pill.find('.bb-memory-save-btn').on('click', function() {
+            const reason = String(pill.find('.bb-memory-edit-text').val() || '').trim();
+            if (!reason) { notifyError('Описание не может быть пустым.'); return; }
+
+            const result = editSocialUpdate({
+                messageIndex: msgIndex,
+                updateIndex: updateIdx,
+                reason,
+            });
+
+            if (result?.ok) {
+                notifySuccess(result.changed ? 'Событие обновлено!' : 'Без изменений.');
+            } else {
+                notifyError(result?.error || 'Ошибка при обновлении события.');
+            }
+        });
+    });
+}
+
+function bindMomentEditHandlers() {
+    jQuery('.bb-moment-edit-btn').off('click').on('click', function(e) {
+        e.stopPropagation();
+        const btn = jQuery(this);
+        const card = btn.closest('.bb-moment-card');
+        const msgIndex = parseInt(btn.attr('data-msg-idx'), 10);
+        const updateIdx = parseInt(btn.attr('data-update-idx'), 10);
+        const textEl = card.find('.bb-moment-text');
+        const currentText = textEl.text().replace(/^[^:]+:\s*/, '');
+
+        if (card.hasClass('editing')) return;
+        card.addClass('editing');
+
+        // Activate stamp: show delete state and clear cycle timers
+        const stamp = card.find('.bb-moment-stamp-deletable');
+        if (stamp.length) {
+            stamp[0]._bbStampHovered = true;
+            if (stamp[0]._bbStampTimers) {
+                stamp[0]._bbStampTimers.forEach(t => clearTimeout(t));
+                stamp[0]._bbStampTimers = [];
+            }
+            stamp.removeClass('bb-stamp-show-delete');
+            stamp.addClass('bb-stamp-hovered');
+        }
+
+        const editHtml = `<div class="bb-moment-edit-form">
+            <label class="bb-edit-field"><span>Описание:</span><textarea class="text_pole bb-moment-edit-text" rows="1" placeholder="Описание события">${escapeHtml(currentText)}</textarea></label>
+            <div class="bb-moment-edit-actions">
+                <button type="button" class="bb-prompt-action-btn bb-prompt-save-btn bb-moment-save-btn" data-msg-idx="${msgIndex}" data-update-idx="${updateIdx}"><i class="fa-solid fa-check"></i><span>Сохранить</span></button>
+                <button type="button" class="bb-prompt-action-btn bb-prompt-cancel-btn bb-moment-cancel-btn"><i class="fa-solid fa-xmark"></i><span>Отмена</span></button>
+            </div>
+        </div>`;
+        card.append(editHtml);
+        textEl.hide();
+
+        // Auto-resize textarea to fit text
+        const textarea = card.find('.bb-moment-edit-text')[0];
+        if (textarea) {
+            const resize = () => { textarea.style.height = 'auto'; textarea.style.height = textarea.scrollHeight + 'px'; };
+            textarea.addEventListener('input', resize);
+            resize();
+        }
+
+        function resetStamp() {
+            if (stamp.length) {
+                stamp[0]._bbStampHovered = false;
+                stamp.removeClass('bb-stamp-hovered');
+                // Restart cycle after transition back
+                setTimeout(() => {
+                    if (!card.hasClass('editing') && stamp[0]._bbStampTimers) {
+                        stamp[0]._bbStampTimers.forEach(t => clearTimeout(t));
+                        stamp[0]._bbStampTimers = [];
+                        // Re-trigger cycle by calling startStampCycle logic inline
+                        const s = stamp[0];
+                        function addTimer(fn, ms) {
+                            const id = setTimeout(() => {
+                                s._bbStampTimers = s._bbStampTimers.filter(t => t !== id);
+                                fn();
+                            }, ms);
+                            s._bbStampTimers.push(id);
+                            return id;
+                        }
+                        function scheduleCycle() {
+                            if (s._bbStampHovered) return;
+                            addTimer(() => {
+                                if (s._bbStampHovered) return;
+                                s.classList.add('bb-stamp-show-delete');
+                                addTimer(() => {
+                                    if (s._bbStampHovered) return;
+                                    s.classList.remove('bb-stamp-show-delete');
+                                    addTimer(scheduleCycle, 1000);
+                                }, 2000);
+                            }, 3000);
+                        }
+                        scheduleCycle();
+                    }
+                }, 1000);
+            }
+        }
+
+        card.find('.bb-moment-cancel-btn').on('click', function() {
+            card.removeClass('editing');
+            card.find('.bb-moment-edit-form').remove();
+            textEl.show();
+            resetStamp();
+        });
+
+        card.find('.bb-moment-save-btn').on('click', function() {
+            const reason = String(card.find('.bb-moment-edit-text').val() || '').trim();
+            if (!reason) { notifyError('Описание не может быть пустым.'); return; }
+
+            const result = editSocialUpdate({
+                messageIndex: msgIndex,
+                updateIndex: updateIdx,
+                reason,
+            });
+
+            if (result?.ok) {
+                notifySuccess(result.changed ? 'Событие обновлено!' : 'Без изменений.');
+                resetStamp();
+            } else {
+                notifyError(result?.error || 'Ошибка при обновлении события.');
+            }
+        });
+    });
+}
+
+function bindGlobalLogDeleteHandlers() {
+    jQuery('.bb-glog-delete-btn').off('click').on('click', async function(e) {
+        e.stopPropagation();
+        const msgIndex = parseInt(jQuery(this).attr('data-msg-idx'), 10);
+        const updateIdx = parseInt(jQuery(this).attr('data-update-idx'), 10);
+        let confirmed = false;
+        setHudPopupPriority(true);
+        try {
+            confirmed = await SillyTavern.getContext().callPopup(
+                '<h3>Удалить событие?</h3><p>Это событие будет удалено из истории. Статы пересчитаются автоматически.</p>',
+                'confirm'
+            );
+        } finally { setHudPopupPriority(false); }
+        if (!confirmed) return;
+        const result = deleteSocialUpdate({ messageIndex: msgIndex, updateIndex: updateIdx });
+        if (result?.ok) { notifySuccess('Событие удалено!'); }
+        else { notifyError(result?.error || 'Ошибка при удалении события.'); }
+    });
+}
+
+function bindMomentDeleteHandlers() {
+    jQuery('.bb-moment-stamp-deletable').off('click').on('click', async function(e) {
+        e.stopPropagation();
+        const msgIndex = parseInt(jQuery(this).attr('data-msg-idx'), 10);
+        const updateIdx = parseInt(jQuery(this).attr('data-update-idx'), 10);
+        let confirmed = false;
+        setHudPopupPriority(true);
+        try {
+            confirmed = await SillyTavern.getContext().callPopup(
+                '<h3>Удалить запись из дневника?</h3><p>Это событие будет удалено. Статы пересчитаются автоматически.</p>',
+                'confirm'
+            );
+        } finally { setHudPopupPriority(false); }
+        if (!confirmed) return;
+        const result = deleteSocialUpdate({ messageIndex: msgIndex, updateIndex: updateIdx });
+        if (result?.ok) { notifySuccess('Запись удалена!'); }
+        else { notifyError(result?.error || 'Ошибка при удалении записи.'); }
+    });
+}
+
+function startStampCycle() {
+    const stamps = document.querySelectorAll('.bb-moment-stamp-deletable');
+    stamps.forEach(stamp => {
+        if (stamp._bbStampTimers) {
+            stamp._bbStampTimers.forEach(t => clearTimeout(t));
+        }
+        stamp._bbStampTimers = [];
+        stamp._bbStampHovered = false;
+
+        function addTimer(fn, ms) {
+            const id = setTimeout(() => {
+                stamp._bbStampTimers = stamp._bbStampTimers.filter(t => t !== id);
+                fn();
+            }, ms);
+            stamp._bbStampTimers.push(id);
+            return id;
+        }
+
+        function clearTimers() {
+            (stamp._bbStampTimers || []).forEach(t => clearTimeout(t));
+            stamp._bbStampTimers = [];
+        }
+
+        function scheduleCycle() {
+            if (stamp._bbStampHovered) return;
+            // 3s label, then show delete (1s CSS transition)
+            addTimer(() => {
+                if (stamp._bbStampHovered) return;
+                stamp.classList.add('bb-stamp-show-delete');
+                // Hold delete for ~2s (1s transition + 1s hold)
+                addTimer(() => {
+                    if (stamp._bbStampHovered) return;
+                    stamp.classList.remove('bb-stamp-show-delete');
+                    // After 1s transition back, restart cycle
+                    addTimer(scheduleCycle, 1000);
+                }, 2000);
+            }, 3000);
+        }
+
+        scheduleCycle();
+
+        stamp.addEventListener('mouseenter', () => {
+            stamp._bbStampHovered = true;
+            clearTimers();
+            stamp.classList.remove('bb-stamp-show-delete');
+            stamp.classList.add('bb-stamp-hovered');
+        });
+
+        stamp.addEventListener('mouseleave', () => {
+            stamp._bbStampHovered = false;
+            stamp.classList.remove('bb-stamp-hovered');
+            // After 1s transition back to label (base speed), restart cycle
+            addTimer(scheduleCycle, 1000);
+        });
+    });
+}
+
+function bindMemoryPillDeleteHandlers() {
+    jQuery('.bb-memory-delete-btn:not(.bb-trait-delete-btn)').off('click').on('click', async function(e) {
+        e.stopPropagation();
+        const pill = jQuery(this).closest('.bb-memory-pill');
+        const msgIndex = parseInt(pill.attr('data-msg-idx'), 10);
+        const updateIdx = parseInt(pill.attr('data-update-idx'), 10);
+        let confirmed = false;
+        setHudPopupPriority(true);
+        try {
+            confirmed = await SillyTavern.getContext().callPopup(
+                '<h3>Удалить воспоминание?</h3><p>Это событие будет удалено. Статы пересчитаются автоматически.</p>',
+                'confirm'
+            );
+        } finally { setHudPopupPriority(false); }
+        if (!confirmed) return;
+        const result = deleteSocialUpdate({ messageIndex: msgIndex, updateIndex: updateIdx });
+        if (result?.ok) { notifySuccess('Воспоминание удалено!'); }
+        else { notifyError(result?.error || 'Ошибка при удалении.'); }
+    });
+}
+
+function bindTraitEditHandlers() {
+    jQuery('.bb-trait-edit-btn').off('click').on('click', function(e) {
+        e.stopPropagation();
+        const btn = jQuery(this);
+        const pill = btn.closest('.bb-memory-pill');
+        const charName = pill.attr('data-char');
+        const traitIndex = parseInt(pill.attr('data-trait-index'), 10);
+        const textSpan = pill.find('span').first();
+        const currentText = textSpan.text();
+
+        if (pill.hasClass('editing')) return;
+        pill.addClass('editing');
+        btn.hide();
+        pill.find('.bb-trait-delete-btn').hide();
+        textSpan.hide();
+
+        const editHtml = `<div class="bb-memory-inline-edit">
+            <textarea class="text_pole bb-trait-edit-text" rows="1">${escapeHtml(currentText)}</textarea>
+            <div class="bb-inline-edit-actions">
+                <button type="button" class="bb-trait-save-btn"><i class="fa-solid fa-check"></i></button>
+                <button type="button" class="bb-trait-cancel-btn"><i class="fa-solid fa-xmark"></i></button>
+            </div>
+        </div>`;
+        pill.append(editHtml);
+
+        const editInput = pill.find('.bb-trait-edit-text')[0];
+        jQuery(editInput).on('input', function() {
+            this.style.height = 'auto';
+            this.style.height = this.scrollHeight + 'px';
+        });
+        setTimeout(() => {
+            editInput.style.height = 'auto';
+            editInput.style.height = editInput.scrollHeight + 'px';
+        }, 0);
+
+        pill.find('.bb-trait-cancel-btn').on('click', function() {
+            pill.removeClass('editing');
+            pill.find('.bb-memory-inline-edit').remove();
+            textSpan.show();
+            btn.show();
+            pill.find('.bb-trait-delete-btn').show();
+        });
+
+        pill.find('.bb-trait-save-btn').on('click', function() {
+            const newTrait = String(pill.find('.bb-trait-edit-text').val() || '').trim();
+            if (!newTrait) { notifyError('Черта не может быть пустой.'); return; }
+            const stats = currentCalculatedStats[charName];
+            if (!stats?.core_traits?.[traitIndex]) { notifyError('Черта не найдена.'); return; }
+            const oldTrait = stats.core_traits[traitIndex].trait;
+            const oldType = stats.core_traits[traitIndex].type;
+            stats.core_traits[traitIndex] = { trait: newTrait, type: oldType };
+
+            // Update the source data in chat messages so the change persists across restarts
+            const chat = SillyTavern.getContext()?.chat;
+            let sourceUpdated = false;
+            if (Array.isArray(chat)) {
+                for (let i = chat.length - 1; i >= 0; i--) {
+                    const msg = chat[i];
+                    const swipeId = msg?.swipe_id || 0;
+                    const traitsArr = msg?.extra?.bb_vn_char_traits_swipes?.[swipeId];
+                    if (!Array.isArray(traitsArr)) continue;
+                    for (let j = 0; j < traitsArr.length; j++) {
+                        if (traitsArr[j]?.charName === charName && traitsArr[j]?.trait === oldTrait) {
+                            traitsArr[j].trait = newTrait;
+                            sourceUpdated = true;
+                            break;
+                        }
+                    }
+                    if (sourceUpdated) break;
+                }
+            }
+
+            saveChatDebounced();
+            notifySuccess('Черта обновлена!');
+            renderSocialHud();
+        });
+    });
+}
+
+function bindTraitDeleteHandlers() {
+    jQuery('.bb-trait-delete-btn').off('click').on('click', async function(e) {
+        e.stopPropagation();
+        const pill = jQuery(this).closest('.bb-memory-pill');
+        const charName = pill.attr('data-char');
+        const traitIndex = parseInt(pill.attr('data-trait-index'), 10);
+        let confirmed = false;
+        setHudPopupPriority(true);
+        try {
+            confirmed = await SillyTavern.getContext().callPopup(
+                '<h3>Удалить черту характера?</h3><p>Черта будет удалена навсегда.</p>',
+                'confirm'
+            );
+        } finally { setHudPopupPriority(false); }
+        if (!confirmed) return;
+        const stats = currentCalculatedStats[charName];
+        if (!stats?.core_traits?.[traitIndex]) { notifyError('Черта не найдена.'); return; }
+
+        // Find and remove the trait from the source data in chat messages
+        const traitText = stats.core_traits[traitIndex].trait;
+        const chat = SillyTavern.getContext()?.chat;
+        let removed = false;
+        if (Array.isArray(chat)) {
+            // Walk messages in reverse to remove the last occurrence (most recent source)
+            for (let i = chat.length - 1; i >= 0; i--) {
+                const msg = chat[i];
+                const swipeId = msg?.swipe_id || 0;
+                const traitsArr = msg?.extra?.bb_vn_char_traits_swipes?.[swipeId];
+                if (!Array.isArray(traitsArr)) continue;
+                for (let j = traitsArr.length - 1; j >= 0; j--) {
+                    if (traitsArr[j]?.charName === charName && traitsArr[j]?.trait === traitText) {
+                        traitsArr.splice(j, 1);
+                        removed = true;
+                        break;
+                    }
+                }
+                if (removed) break;
+            }
+        }
+
+        if (!removed) {
+            // Fallback: remove from calculated stats (will reappear on next recalc, but better than nothing)
+            stats.core_traits.splice(traitIndex, 1);
+        }
+
+        saveChatDebounced();
+        recalculateAllStats(false);
+        notifySuccess('Черта удалена!');
+        renderSocialHud();
+    });
+}
+
+function saveCardExpansionStates() {
+    const states = { expanded: [], editorOpen: [] };
+    document.querySelectorAll('.bb-char-card.expanded').forEach(card => {
+        const name = card.getAttribute('data-char');
+        if (name) states.expanded.push(name);
+    });
+    document.querySelectorAll('.bb-char-card.editor-open').forEach(card => {
+        const name = card.getAttribute('data-char');
+        if (name) states.editorOpen.push(name);
+    });
+    return states;
+}
+
+function restoreCardExpansionStates(states) {
+    if (!states) return;
+    states.expanded.forEach(name => {
+        const card = document.querySelector(`.bb-char-card[data-char="${CSS.escape(name)}"]`);
+        if (card) card.classList.add('expanded');
+    });
+    states.editorOpen.forEach(name => {
+        const card = document.querySelector(`.bb-char-card[data-char="${CSS.escape(name)}"]`);
+        if (card) card.classList.add('expanded', 'editor-open');
+    });
+}
+
 export function renderSocialHud() {
+    const savedStates = saveCardExpansionStates();
+    const scroller = document.querySelector('.bb-hud-content.active');
+    const savedScrollTop = scroller ? scroller.scrollTop : 0;
+
+    injectInlineEditStyles();
     bindActivePersonaState();
     if (extension_settings[MODULE_NAME]?.disableRelationshipTracker === true) {
         const charsBox = document.getElementById('bb-hud-chars');
@@ -754,10 +1443,10 @@ export function renderSocialHud() {
 
                 const romanceHtml = romance !== 0 ? `
     <div class="bb-progress-wrapper bb-progress-wrapper-romance">
-        <div class="bb-progress-labels" style="color:#f472b6; position: relative; display: flex; justify-content: space-between; align-items: center;">
+        <div class="bb-progress-labels bb-progress-labels-romance">
             <span>Неприязнь</span>
-            <span class="bb-label-center" style="position: absolute; left: 50%; transform: translateX(-50%); display: flex; align-items: center; white-space: nowrap;">
-                <i class="fa-solid fa-heart" style="font-size:12px; margin-right: 4px;"></i>Влечение
+            <span class="bb-label-center">
+                <i class="fa-solid fa-heart bb-romance-icon"></i>Влечение
             </span>
             <span>Любовь</span>
         </div>
@@ -772,13 +1461,40 @@ export function renderSocialHud() {
                 const isPlatonic = (chat_metadata['bb_vn_platonic_chars'] || []).includes(charName);
 
                 const allDeepMemories = [...(memories.archive || []), ...memories.deep];
-                const softMemoriesHtml = memories.soft.length > 0
-                    ? [...memories.soft].reverse().map(memory => `<div class="bb-memory-pill ${memory.tone}">${escapeHtml(memory.text)}</div>`).join('')
-                    : '<i style="color:#64748b; font-size: 11px;">Пока нет мягких следов</i>';
+                const softMemoriesFullExp = memories.soft.length > 0
+                    ? [...memories.soft].reverse().map(memory => {
+                        const sourceData = memory.msgIndex !== undefined ? `data-msg-idx="${memory.msgIndex}" data-update-idx="${memory.updateIdx}"` : '';
+                        return `<div class="bb-memory-pill ${memory.tone}" ${sourceData}><span>${escapeHtml(memory.text)}</span>${sourceData ? '<span class="bb-memory-pill-btns"><button type="button" class="bb-memory-edit-btn" title="Редактировать"><i class="fa-solid fa-pen-to-square"></i></button><button type="button" class="bb-memory-delete-btn" title="Удалить"><i class="fa-solid fa-trash-can"></i></button></span>' : ''}</div>`;
+                    })
+                    : [];
+                const softMemoriesHtmlExp = softMemoriesFullExp.length > 0
+                    ? softMemoriesFullExp.map((html, i) => {
+                        if (i < MEMORY_SHOW_LIMIT) return html;
+                        return html.replace('class="bb-memory-pill', 'class="bb-memory-pill bb-memory-hidden');
+                    }).join('')
+                    : '<i class="bb-empty-memory-msg">Пока нет мягких следов</i>';
+                const softMemoriesShowMoreExp = softMemoriesFullExp.length > MEMORY_SHOW_LIMIT
+                    ? (() => {
+                        const remaining = softMemoriesFullExp.length - MEMORY_SHOW_LIMIT;
+                        return `<button type="button" class="bb-memory-show-more" data-shown="${MEMORY_SHOW_LIMIT}" data-step="${MEMORY_SHOW_MORE}" data-total="${softMemoriesFullExp.length}"><i class="fa-solid fa-chevron-down"></i>ещё ${remaining}</button>`;
+                    })()
+                    : '';
 
-                const deepMemoriesHtml = allDeepMemories.length > 0
-                    ? buildDeepMemoryDisplayItems(allDeepMemories).map(renderDeepMemoryPill).join('')
-                    : '<i style="color:#64748b; font-size: 11px;">Ничего незабываемого</i>';
+                const deepMemoriesFullExp = allDeepMemories.length > 0
+                    ? buildDeepMemoryDisplayItems(allDeepMemories).map(renderDeepMemoryPill)
+                    : [];
+                const deepMemoriesHtmlExp = deepMemoriesFullExp.length > 0
+                    ? deepMemoriesFullExp.map((html, i) => {
+                        if (i < MEMORY_SHOW_LIMIT) return html;
+                        return html.replace('class="bb-memory-pill', 'class="bb-memory-pill bb-memory-hidden');
+                    }).join('')
+                    : '<i class="bb-empty-memory-msg">Ничего незабываемого</i>';
+                const deepMemoriesShowMoreExp = deepMemoriesFullExp.length > MEMORY_SHOW_LIMIT
+                    ? (() => {
+                        const remaining = deepMemoriesFullExp.length - MEMORY_SHOW_LIMIT;
+                        return `<button type="button" class="bb-memory-show-more" data-shown="${MEMORY_SHOW_LIMIT}" data-step="${MEMORY_SHOW_MORE}" data-total="${deepMemoriesFullExp.length}"><i class="fa-solid fa-chevron-down"></i>ещё ${remaining}</button>`;
+                    })()
+                    : '';
 
                 const coreTraits = stats.core_traits || [];
                 let posTraitsCount = 0, negTraitsCount = 0;
@@ -787,20 +1503,19 @@ export function renderSocialHud() {
                     ? coreTraits.map(t => {
                         if (t.type === 'positive') posTraitsCount++;
                         else if (t.type === 'negative') negTraitsCount++;
-                        const color = t.type === 'positive' ? '#4ade80' : (t.type === 'negative' ? '#fb7185' : '#fbbf24');
-                        const bg = t.type === 'positive' ? 'rgba(74, 222, 128, 0.12)' : (t.type === 'negative' ? 'rgba(244, 63, 94, 0.12)' : 'rgba(251, 191, 36, 0.12)');
+                        const traitTypeClass = t.type === 'positive' || t.type === 'negative' ? t.type : 'legacy';
                         let traitText = escapeHtml(t.trait);
                         const colonIdx = traitText.indexOf(':');
                         if (colonIdx !== -1 && colonIdx < 50) { 
                             const boldName = traitText.substring(0, colonIdx).trim();
                             const restDesc = traitText.substring(colonIdx + 1).trim();
-                            traitText = `<b style="color:inherit; filter:brightness(1.5); text-transform:uppercase; font-size:10px; margin-right:4px; letter-spacing:0.5px;">${boldName}:</b> ${restDesc}`;
+                            traitText = `<b class="bb-trait-name-bold">${boldName}:</b> <span class="bb-trait-description">${restDesc}</span>`;
                         }
-                        return `<div class="bb-memory-pill deep" style="border-color:${color}; color:${color}; background:${bg};"><i class="fa-solid fa-gem"></i> <span>${traitText}</span></div>`;
+                        return `<div class="bb-memory-pill deep ${traitTypeClass} trait" data-trait-index="${coreTraits.indexOf(t)}" data-char="${escapeHtml(charName)}"><i class="fa-solid fa-gem"></i> <span>${traitText}</span><span class="bb-memory-pill-btns"><button type="button" class="bb-memory-edit-btn bb-trait-edit-btn" data-trait-index="${coreTraits.indexOf(t)}" data-char="${escapeHtml(charName)}" title="Редактировать черту"><i class="fa-solid fa-pen-to-square"></i></button><button type="button" class="bb-memory-delete-btn bb-trait-delete-btn" data-trait-index="${coreTraits.indexOf(t)}" data-char="${escapeHtml(charName)}" title="Удалить черту"><i class="fa-solid fa-trash-can"></i></button></span></div>`;
                     }).join('') : '';
 
-                const deepPosCount = memories.deep.filter(m => m.tone === 'positive').length;
-                const deepNegCount = memories.deep.filter(m => m.tone === 'negative').length;
+                const deepPosCount = (memories.deep || []).filter(m => m.tone === 'positive').length;
+                const deepNegCount = (memories.deep || []).filter(m => m.tone === 'negative').length;
                 
                 let crystalTrackerHtml = '';
                 if (deepPosCount > 0 || posTraitsCount > 0 || deepNegCount > 0 || negTraitsCount > 0) {
@@ -819,51 +1534,58 @@ export function renderSocialHud() {
                     <div class="bb-char-card" data-char="${escapeHtml(charName)}">
                         <div class="bb-char-card-shell">
                             <div class="bb-char-hero">
-                                <div class="bb-char-identity" style="display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;">
-                                    <div style="display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0;">
-                                        <div class="bb-char-name" style="font-size: 16px; line-height: 1.15; word-break: keep-all; overflow-wrap: break-word;">${escapeHtml(charName)}</div>
-                                        <div style="display: flex; align-items: baseline; gap: 12px; margin-top: 2px; flex-wrap: wrap;">
-                                            <span class="bb-char-score" style="color:${tier.color}; line-height: 1; font-size: 20px;">${affinity > 0 ? '+' : ''}${affinity}</span>
-                                            ${romance !== 0 ? `<span style="font-size: 13px; font-weight: 700; color: #f472b6; display: flex; align-items: center; gap: 4px;"><i class="fa-solid fa-heart" style="font-size:10px;"></i>${romance > 0 ? '+' : ''}${romance}</span>` : ''}
+                                <div class="bb-char-identity bb-char-identity-expanded">
+                                    <div class="bb-char-identity-left">
+                                        <div class="bb-char-name bb-char-name-expanded">${escapeHtml(charName)}</div>
+                                        <div class="bb-char-score-row">
+                                            <span class="bb-char-score bb-char-score-expanded" style="color:${tier.color};">${affinity > 0 ? '+' : ''}${affinity}</span>
+                                            ${romance !== 0 ? `<span class="bb-char-romance-badge"><i class="fa-solid fa-heart"></i>${romance > 0 ? '+' : ''}${romance}</span>` : ''}
                                         </div>
                                     </div>
-                                    <div style="display: flex; align-items: flex-start; gap: 10px; text-align: right; flex-shrink: 0;">
-                                        <div class="bb-char-subtitle" style="display: flex; flex-direction: column; align-items: flex-end; gap: 6px; margin: 0; padding-top: 2px;">
-                                            <span class="bb-char-direction" style="margin-bottom: 0;"><i class="fa-solid fa-eye"></i> отношение к вам:</span>
-                                            <div class="bb-char-signals" style="display: flex; flex-direction: column; align-items: flex-end; gap: 5px;">
-                                                <span class="bb-char-tier ${tier.class}" style="text-align: center; max-width: 130px; line-height: 1.3;" title="${escapeHtml(displayStatus)}">${escapeHtml(displayStatus)}</span>
-                                                ${memories.deep.length > 0 ? `<span class="bb-unforgettable-impact" style="text-align: center; max-width: 130px; line-height: 1.3;">${escapeHtml(unforgettableImpact.label)}</span>` : ''}
+                                    <div class="bb-char-identity-right">
+                                        <div class="bb-char-subtitle bb-char-subtitle-expanded">
+                                            <span class="bb-char-direction bb-char-direction-expanded"><i class="fa-solid fa-eye"></i> отношение к вам:</span>
+                                            <div class="bb-char-signals bb-char-signals-expanded">
+                                                <span class="bb-char-tier ${tier.class} bb-char-tier-expanded" title="${escapeHtml(displayStatus)}">${escapeHtml(displayStatus)}</span>
+                                                ${memories.deep.length > 0 ? `<span class="bb-unforgettable-impact bb-unforgettable-impact-expanded">${escapeHtml(unforgettableImpact.label)}</span>` : ''}
                                             </div>
                                         </div>
-                                        <button type="button" class="bb-char-edit-btn" data-char="${escapeHtml(charName)}" title="Настройки персонажа" style="background: none; border: none; color: #64748b; cursor: pointer; padding: 0; font-size: 14px; min-width: auto; margin-top: -2px;"><i class="fa-solid fa-sliders"></i></button>
+                                        <button type="button" class="bb-char-edit-btn bb-char-edit-btn-expanded" data-char="${escapeHtml(charName)}" title="Настройки персонажа"><i class="fa-solid fa-sliders"></i></button>
                                     </div>
                                 </div>
                                 <div class="bb-char-route-meta">
                                     <div class="bb-char-meta-card"><span class="bb-char-meta-label">Последний сдвиг</span><strong style="color: ${lastShift ? lastShift.color : '#f8fafc'};">${escapeHtml(lastShiftPoints)}</strong></div>
-                                    <div class="bb-char-meta-card"><span class="bb-char-meta-label">Динамика</span><strong style="color: #cbd5e1;">${escapeHtml(getTrendNarrative(stats.history || []))}</strong></div>
+                                    <div class="bb-char-meta-card"><span class="bb-char-meta-label">Динамика</span><strong class="bb-meta-value-dynamics">${escapeHtml(getTrendNarrative(stats.history || []))}</strong></div>
                                 </div>
                             </div>
-                            <div style="display: flex; flex-direction: column; gap: 10px; margin-top: 6px; min-height: 30px;">
-                                <div class="bb-progress-wrapper"><div class="bb-progress-labels" style="position: relative; display: flex; justify-content: space-between; align-items: center;"><span>Ненависть</span><span style="position: absolute; left: 50%; transform: translateX(-50%); white-space: nowrap;">Равнодушие</span><span>Семья</span></div><div class="bb-progress-bg"><div class="bb-progress-center-line"></div><div class="bb-progress-fill" style="${barStyle}"></div></div></div>
+                            <div class="bb-char-progress-container">
+                                <div class="bb-progress-wrapper"><div class="bb-progress-labels"><span>Ненависть</span><span class="bb-label-center">Равнодушие</span><span>Семья</span></div><div class="bb-progress-bg"><div class="bb-progress-center-line"></div><div class="bb-progress-fill" style="${barStyle}"></div></div></div>
                                 ${romanceHtml}
                             </div>
-                            <div class="bb-char-insight-grid" style="margin-top: 6px;">
+                            <div class="bb-char-insight-grid bb-char-insight-grid-spaced">
                                 <div class="bb-char-insight-tile"><span class="bb-char-insight-label">Мягкие следы</span><strong>${memories.soft.length}</strong></div>
                                 <div class="bb-char-insight-tile"><span class="bb-char-insight-label">Глубокие следы</span><strong>${allDeepMemories.length}</strong></div>
                             </div>
                             ${crystalTrackerHtml}
                         </div>
                         ${(memories.soft.length > 0 || allDeepMemories.length > 0) ? `
-                        <div class="bb-char-log" style="border-radius: 0;">
-                            ${coreTraits.length > 0 ? `<div class="bb-memory-section" style="padding-top: 4px; margin-bottom: 8px;"><div class="bb-memory-title" style="color:#fbbf24;">Черты Характера</div><div class="bb-memory-list bb-memory-list-deep">${traitsHtml}</div></div>` : ''}
-                            ${memories.soft.length > 0 ? `<div class="bb-memory-section" style="padding-top: 4px;"><div class="bb-memory-title">Мягкие следы</div><div class="bb-memory-list">${softMemoriesHtml}</div></div>` : ''}
-                            ${allDeepMemories.length > 0 ? `<div class="bb-memory-section"><div class="bb-memory-title">Незабываемые события</div><div class="bb-memory-list bb-memory-list-deep">${deepMemoriesHtml}</div></div>` : ''}
+                        <div class="bb-char-log bb-char-log-flat">
+                            ${coreTraits.length > 0 ? `<div class="bb-memory-section bb-memory-section-traits"><div class="bb-memory-title bb-memory-title-traits">Черты Характера</div><div class="bb-memory-list bb-memory-list-deep">${traitsHtml}</div></div>` : ''}
+                            ${softMemoriesFullExp.length > 0 ? `<div class="bb-memory-section bb-memory-section-soft"><div class="bb-memory-title">Мягкие следы</div><div class="bb-memory-list">${softMemoriesHtmlExp}</div>${softMemoriesShowMoreExp}</div>` : ''}
+                            ${deepMemoriesFullExp.length > 0 ? `<div class="bb-memory-section"><div class="bb-memory-title">Незабываемые события</div><div class="bb-memory-list bb-memory-list-deep">${deepMemoriesHtmlExp}</div>${deepMemoriesShowMoreExp}</div>` : ''}
                         </div>` : ''}
-                        <div class="bb-char-editor" style="display:none; cursor: default; border-top: 1px solid rgba(255,255,255,0.06); border-radius: 0 0 22px 22px; margin: 0; background: rgba(0,0,0,0.2);">
+                        <div class="bb-char-editor bb-char-editor-inline bb-char-editor-inline-hidden">
+                            <div class="bb-editor-top-bar">
+                                <button type="button" class="bb-editor-minimize-btn" title="Свернуть редактор"><i class="fa-solid fa-chevron-up"></i></button>
+                                <button type="button" class="bb-editor-collapse-btn" title="Свернуть журнал и редактор"><i class="fa-solid fa-xmark"></i></button>
+                            </div>
                             <div class="bb-editor-title">Настройки связи</div><div class="bb-editor-hint">Измените стартовые очки или заблокируйте романтику.</div>
-                            <div style="display:flex; gap: 8px; margin-bottom: 8px;"><div style="flex:1;"><span style="font-size: 9px; color:#94a3b8; text-transform:uppercase;">База Доверия:</span><input type="number" class="text_pole bb-edit-base-input" value="${baseAffinity}" style="width:100%; box-sizing:border-box;"></div><div style="flex:1;"><span style="font-size: 9px; color:#f472b6; text-transform:uppercase;">База Романтики:</span><input type="number" class="text_pole bb-edit-romance-input" value="${baseRomance}" style="width:100%; box-sizing:border-box;"></div></div>
-                            <label class="checkbox_label" style="margin-bottom: 10px;"><input type="checkbox" class="bb-edit-platonic-cb" ${isPlatonic ? 'checked' : ''}><span style="font-size: 11px; color:#fca5a5;">Строго платонически (Блокирует флирт)</span></label>
-                            <div class="bb-editor-actions"><button class="menu_button bb-btn-save-char" data-char="${escapeHtml(charName)}" style="flex:1;"><i class="fa-solid fa-check"></i>&ensp;Сохранить</button><button class="menu_button bb-btn-hide-char" data-char="${escapeHtml(charName)}" style="flex:1; background: rgba(239,68,68,0.15); color: #f87171; border-color: rgba(239,68,68,0.35);"><i class="fa-solid fa-eye-slash"></i>&ensp;Скрыть</button></div>
+                            <div class="bb-editor-base-row"><div><span class="bb-editor-label-sm bb-editor-label-affinity">База Доверия:</span><input type="number" class="text_pole bb-edit-base-input bb-editor-base-input" value="${baseAffinity}"></div><div><span class="bb-editor-label-sm bb-editor-label-romance">База Романтики:</span><input type="number" class="text_pole bb-edit-romance-input bb-editor-base-input" value="${baseRomance}"></div></div>
+                            <label class="checkbox_label bb-editor-platonic-label"><input type="checkbox" class="bb-edit-platonic-cb" ${isPlatonic ? 'checked' : ''}><span class="bb-editor-platonic-text">Строго платонически (Блокирует флирт)</span></label>
+                            <div class="bb-editor-actions">
+                                <button class="bb-btn-save-char" data-char="${escapeHtml(charName)}"><i class="fa-solid fa-check"></i>&ensp;Сохранить</button>
+                                <button class="bb-btn-hide-char" data-char="${escapeHtml(charName)}"><i class="fa-solid fa-eye-slash"></i>&ensp;Скрыть</button>
+                            </div>
                         </div>
                     </div>
                 `;
@@ -878,16 +1600,76 @@ export function renderSocialHud() {
                 <div class="bb-route-card-stack">${cardsHtml}</div>
             `;
 
-            jQuery('.bb-char-card').off('click').on('click', function(e) {
-                if (jQuery(e.target).closest('.bb-char-edit-btn, .bb-char-editor, .bb-char-body, .bb-btn-crystallize-pos, .bb-btn-crystallize-neg').length) return;
-                const card = jQuery(this);
+            jQuery('.bb-char-expand-indicator').off('click').on('click', function(e) {
+                e.stopPropagation();
+                const card = jQuery(this).closest('.bb-char-card');
                 setCharacterCardExpanded(card, !card.hasClass('expanded'));
+            });
+
+            jQuery('.bb-memory-show-more').off('click').on('click', function(e) {
+                e.stopPropagation();
+                const btn = jQuery(this);
+                const section = btn.closest('.bb-memory-section');
+                const step = parseInt(btn.attr('data-step') || '4', 10);
+                const total = parseInt(btn.attr('data-total') || '0', 10);
+                const isDone = btn.hasClass('bb-memory-show-more-done');
+
+                if (isDone) {
+                    // Collapse: hide items beyond the limit
+                    const allPills = section.find('.bb-memory-pill');
+                    allPills.each(function(idx) {
+                        if (idx >= MEMORY_SHOW_LIMIT) {
+                            jQuery(this).addClass('bb-memory-hidden');
+                        }
+                    });
+                    btn.removeClass('bb-memory-show-more-done');
+                    btn.find('i').css('transform', '');
+                    btn.attr('data-shown', String(MEMORY_SHOW_LIMIT));
+                    const remaining = total - MEMORY_SHOW_LIMIT;
+                    btn.html(`<i class="fa-solid fa-chevron-down" style="transform:"></i>ещё ${remaining}`);
+                } else {
+                    // Expand: reveal next batch
+                    const shown = parseInt(btn.attr('data-shown') || String(MEMORY_SHOW_LIMIT), 10);
+                    const nextLimit = Math.min(shown + step, total);
+                    const hiddenPills = section.find('.bb-memory-pill.bb-memory-hidden');
+                    let revealed = 0;
+                    hiddenPills.each(function() {
+                        if (revealed >= step) return false;
+                        jQuery(this).removeClass('bb-memory-hidden');
+                        revealed++;
+                    });
+                    if (nextLimit >= total) {
+                        btn.addClass('bb-memory-show-more-done');
+                        btn.html('<i class="fa-solid fa-chevron-up"></i>свернуть');
+                    } else {
+                        btn.attr('data-shown', String(nextLimit));
+                        const remaining = total - nextLimit;
+                        btn.html(`<i class="fa-solid fa-chevron-down"></i>ещё ${remaining}`);
+                    }
+                }
             });
 
             jQuery('.bb-char-edit-btn').off('click').on('click', function(e) {
                 e.stopPropagation();
                 const card = jQuery(this).closest('.bb-char-card');
                 setCharacterEditorOpen(card, !card.hasClass('editor-open'));
+            });
+
+            jQuery('.bb-editor-collapse-btn').off('click').on('click', function(e) {
+                e.stopPropagation();
+                const card = jQuery(this).closest('.bb-char-card');
+                // Collapse editor + body (fully close the card)
+                // Using setCharacterCardExpanded to also reset "show more" memory sections
+                setCharacterCardExpanded(card, false);
+                card.addClass('log-collapsed');
+            });
+
+            jQuery('.bb-editor-minimize-btn').off('click').on('click', function(e) {
+                e.stopPropagation();
+                const card = jQuery(this).closest('.bb-char-card');
+                // Collapse only the editor, keep body/log open
+                setCharacterEditorOpen(card, false);
+                scrollAfterTransition(card[0], '.bb-char-body-inner', card);
             });
 
             jQuery('.bb-btn-upload-avatar').off('click').on('click', function(e) {
@@ -1111,7 +1893,8 @@ export function renderSocialHud() {
                 const charName = jQuery(this).attr('data-char');
                 const isPositive = jQuery(this).hasClass('bb-btn-crystallize-pos');
                 const stats = currentCalculatedStats[charName];
-                const targetMemories = stats.memories.deep.filter(m => m.tone === (isPositive ? 'positive' : 'negative'));
+                const allDeepMemories = [...(stats.memories?.archive || []), ...(stats.memories?.deep || [])];
+                const targetMemories = allDeepMemories.filter(m => m.tone === (isPositive ? 'positive' : 'negative'));
                 if (targetMemories.length < 5) return;
                 const btn = jQuery(this); const originalHtml = btn.html();
                 btn.html('<i class="fa-solid fa-spinner fa-spin"></i> Анализ воспоминаний...').css('pointer-events', 'none');
@@ -1168,17 +1951,108 @@ export function renderSocialHud() {
         const logs = chat_metadata['bb_vn_global_log'] || [];
         const promptPreviewHtml = `
             <div class="bb-panel-hero bb-panel-hero-system"><div class="bb-panel-kicker">Журнал</div><div class="bb-panel-headline">Системный журнал</div><div class="bb-panel-subtitle">Здесь показаны изменения отношений и текущий инжектируемый промпт.</div>
-            <div class="bb-panel-stat-grid"><div class="bb-panel-stat"><span class="bb-panel-stat-label">Событий</span><strong>${logs.length}</strong></div><div class="bb-panel-stat"><span class="bb-panel-stat-label">Активный тон</span><strong>${escapeHtml(activeChoiceTone)}</strong></div><div class="bb-panel-stat"><span class="bb-panel-stat-label">Последнее событие</span><strong>${escapeHtml(latestMoment?.title || '—')}</strong></div><div class="bb-panel-stat"><span class="bb-panel-stat-label">Social HTML</span><strong>${escapeHtml(socialDebugLabel)}</strong></div></div><div class="bb-panel-subtitle" style="margin-top:8px;">${escapeHtml(socialDebugText)}</div></div>
-            <details class="bb-prompt-card"><summary class="bb-prompt-summary"><span>🧠 Inject Prompt</span><button type="button" class="menu_button bb-copy-prompt-btn"><i class="fa-solid fa-copy"></i>&nbsp; Копировать</button></summary><div class="bb-prompt-hint">Это текущий инжект, собранный из актуального состояния чата. После нового выбора VN или следующего хода он может измениться.</div><pre class="bb-prompt-pre">${escapeHtml(getCombinedSocial())}</pre></details>
+            <div class="bb-panel-stat-grid"><div class="bb-panel-stat"><span class="bb-panel-stat-label">Событий</span><strong>${logs.length}</strong></div><div class="bb-panel-stat"><span class="bb-panel-stat-label">Активный тон</span><strong>${escapeHtml(activeChoiceTone)}</strong></div><div class="bb-panel-stat"><span class="bb-panel-stat-label">Последнее событие</span><strong>${escapeHtml(latestMoment?.title || '—')}</strong></div><div class="bb-panel-stat"><span class="bb-panel-stat-label">Social HTML</span><strong>${escapeHtml(socialDebugLabel)}</strong></div></div><div class="bb-panel-subtitle bb-panel-subtitle-spaced">${escapeHtml(socialDebugText)}</div></div>
+            <details class="bb-prompt-card"><summary class="bb-prompt-summary"><span>🧠 Inject Prompt</span><div class="bb-prompt-actions"><button type="button" class="bb-prompt-icon-btn bb-copy-prompt-btn" title="Копировать"><i class="fa-solid fa-copy"></i></button><button type="button" class="bb-prompt-icon-btn bb-edit-prompt-btn" title="Редактировать"><i class="fa-solid fa-pen-to-square"></i></button><button type="button" class="bb-prompt-icon-btn bb-toggle-prompt-btn" title="Развернуть"><i class="fa-solid fa-chevron-down"></i></button></div></summary><div class="bb-prompt-hint">Это текущий инжект, собранный из актуального состояния чата. Вы можете отредактировать его вручную — изменения сохранятся как переопределение.</div><pre class="bb-prompt-pre">${escapeHtml(getCombinedSocial())}</pre>${chat_metadata['bb_vn_prompt_override'] ? '<div class="bb-prompt-override-label"><i class="fa-solid fa-pen-to-square"></i> Промпт переопределён вручную</div>' : ''}</details>
         `;
         if (logs.length === 0) logBox.innerHTML = `${promptPreviewHtml}<div class="bb-empty-hud">Журнал событий пуст.</div>`;
         else {
             let logHtml = '<div class="bb-system-log-list">';
-            [...logs].reverse().forEach(log => { logHtml += `<div class="bb-glog-item ${log.type}"><span class="bb-glog-time">[${log.time}]</span><span class="bb-glog-text">${log.text}</span></div>`; });
+            [...logs].reverse().forEach((log, displayIdx) => {
+                const originalIdx = logs.length - 1 - displayIdx;
+                const hasSource = log.msgIndex !== undefined && log.updateIdx !== undefined;
+                logHtml += `<div class="bb-glog-item ${log.type}" data-log-idx="${originalIdx}" ${hasSource ? `data-msg-idx="${log.msgIndex}" data-update-idx="${log.updateIdx}"` : ''}>
+                    <span class="bb-glog-time">[${log.time}]</span>
+                    <span class="bb-glog-text">${log.text}</span>
+                    ${hasSource ? `<button type="button" class="bb-glog-edit-btn" data-msg-idx="${log.msgIndex}" data-update-idx="${log.updateIdx}" title="Редактировать событие"><i class="fa-solid fa-pen-to-square"></i></button><button type="button" class="bb-glog-delete-btn" data-msg-idx="${log.msgIndex}" data-update-idx="${log.updateIdx}" title="Удалить событие"><i class="fa-solid fa-trash-can"></i></button>` : ''}
+                </div>`;
+            });
             logHtml += '</div>'; logBox.innerHTML = promptPreviewHtml + logHtml;
+            bindGlobalLogEditHandlers();
+            bindGlobalLogDeleteHandlers();
         }
         const copyBtn = logBox.querySelector('.bb-copy-prompt-btn');
         if (copyBtn) copyBtn.addEventListener('click', async () => { try { await navigator.clipboard.writeText(getCombinedSocial()); notifySuccess("Prompt скопирован!"); } catch (e) { notifyError("Ошибка копирования."); } });
+
+        // Toggle expand/collapse button for inject prompt
+        const toggleBtn = logBox.querySelector('.bb-toggle-prompt-btn');
+        if (toggleBtn) toggleBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const details = this.closest('details');
+            if (!details) return;
+            details.open = !details.open;
+            this.innerHTML = details.open ? '<i class="fa-solid fa-chevron-up"></i>' : '<i class="fa-solid fa-chevron-down"></i>';
+            this.title = details.open ? 'Свернуть' : 'Развернуть';
+        });
+
+        // Also sync toggle icon when <details> is toggled natively (clicking the summary)
+        const promptDetails = logBox.querySelector('details.bb-prompt-card');
+        if (promptDetails) promptDetails.addEventListener('toggle', function() {
+            const btn = this.querySelector('.bb-toggle-prompt-btn');
+            if (btn) {
+                btn.innerHTML = this.open ? '<i class="fa-solid fa-chevron-up"></i>' : '<i class="fa-solid fa-chevron-down"></i>';
+                btn.title = this.open ? 'Свернуть' : 'Развернуть';
+            }
+        });
+
+        const editPromptBtn = logBox.querySelector('.bb-edit-prompt-btn');
+        if (editPromptBtn) editPromptBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            const details = this.closest('details');
+            const pre = details?.querySelector('.bb-prompt-pre');
+            if (!pre) return;
+
+            // If already in edit mode → close (toggle off)
+            const existingArea = details.querySelector('.bb-prompt-edit-area');
+            if (existingArea) {
+                existingArea.remove();
+                details.querySelector('.bb-prompt-edit-actions')?.remove();
+                pre.style.display = '';
+                this.innerHTML = '<i class="fa-solid fa-pen-to-square"></i>';
+                this.title = 'Редактировать';
+                this.classList.remove('is-active');
+                return;
+            }
+
+            // Open details & enter edit mode (toggle on)
+            details.open = true;
+            this.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+            this.title = 'Закрыть редактирование';
+            this.classList.add('is-active');
+            // Sync toggle icon
+            const toggleIcon = details.querySelector('.bb-toggle-prompt-btn');
+            if (toggleIcon) { toggleIcon.innerHTML = '<i class="fa-solid fa-chevron-up"></i>'; toggleIcon.title = 'Свернуть'; }
+
+            const currentText = pre.textContent || '';
+            pre.style.display = 'none';
+            const textarea = document.createElement('textarea');
+            textarea.className = 'text_pole bb-prompt-edit-area';
+            textarea.value = currentText;
+            textarea.style.cssText = 'width:100%;box-sizing:border-box;';
+            pre.parentNode.insertBefore(textarea, pre.nextSibling);
+            const actionsBar = document.createElement('div');
+            actionsBar.className = 'bb-prompt-edit-actions';
+            actionsBar.innerHTML = '<button type="button" class="bb-prompt-action-btn bb-prompt-save-btn"><i class="fa-solid fa-check"></i><span>Сохранить</span></button><button type="button" class="bb-prompt-action-btn bb-prompt-reset-btn"><i class="fa-solid fa-rotate-left"></i><span>Сбросить</span></button>';
+            textarea.parentNode.insertBefore(actionsBar, textarea.nextSibling);
+            actionsBar.querySelector('.bb-prompt-reset-btn').addEventListener('click', () => {
+                delete chat_metadata['bb_vn_prompt_override'];
+                saveChatDebounced();
+                injectCombinedSocialPrompt();
+                recalculateAllStats(false);
+                notifySuccess('Промпт сброшен к автоматическому.');
+                renderSocialHud();
+            });
+            actionsBar.querySelector('.bb-prompt-save-btn').addEventListener('click', () => {
+                const newText = textarea.value.trim();
+                if (!newText) { notifyError('Промпт не может быть пустым.'); return; }
+                chat_metadata['bb_vn_prompt_override'] = newText;
+                saveChatDebounced();
+                injectCombinedSocialPrompt();
+                notifySuccess('Промпт переопределён!');
+                renderSocialHud();
+            });
+        });
     }
 
     const momentsBox = document.getElementById('bb-hud-moments');
@@ -1186,11 +2060,54 @@ export function renderSocialHud() {
         if (currentStoryMoments.length === 0) momentsBox.innerHTML = `<div class="bb-panel-hero bb-panel-hero-diary"><div class="bb-panel-kicker">Дневник событий</div><div class="bb-panel-headline">Дневник ещё пуст</div><div class="bb-panel-subtitle">Здесь будут сохраняться важные изменения.</div></div><div class="bb-empty-hud">Памятные моменты пока не накопились.</div>`;
         else {
             let momentsHtml = `<div class="bb-panel-hero bb-panel-hero-diary"><div class="bb-panel-kicker">Дневник событий</div><div class="bb-panel-headline">События</div><div class="bb-panel-subtitle">Важные события, зафиксированные по ходу чата.</div><div class="bb-panel-stat-grid"><div class="bb-panel-stat"><span class="bb-panel-stat-label">Записей</span><strong>${currentStoryMoments.length}</strong></div><div class="bb-panel-stat"><span class="bb-panel-stat-label">Последняя</span><strong>${escapeHtml(currentStoryMoments[currentStoryMoments.length - 1]?.title || '—')}</strong></div></div></div><div class="bb-diary-stack">`;
-            [...currentStoryMoments].reverse().forEach((moment, index) => { momentsHtml += `<div class="bb-moment-card ${escapeHtml(moment.type || 'neutral')}"><div class="bb-moment-pin"></div><div class="bb-moment-header"><div class="bb-moment-meta"><span class="bb-moment-stamp">Запись ${currentStoryMoments.length - index}</span><span class="bb-moment-char">${escapeHtml(moment.char || 'Сцена')}</span></div><span class="bb-moment-title">${escapeHtml(moment.title)}</span></div><div class="bb-moment-divider"></div><div class="bb-moment-body"><div class="bb-moment-text">${escapeHtml(moment.text)}</div></div></div>`; });
+            [...currentStoryMoments].reverse().forEach((moment, index) => {
+                const hasSource = moment.msgIndex !== undefined && moment.updateIdx !== undefined;
+                const sourceData = hasSource ? `data-msg-idx="${moment.msgIndex}" data-update-idx="${moment.updateIdx}"` : '';
+                momentsHtml += `<div class="bb-moment-card ${escapeHtml(moment.type || 'neutral')}" ${sourceData}><div class="bb-moment-pin"></div><div class="bb-moment-header"><div class="bb-moment-meta"><span class="bb-moment-char">${escapeHtml(moment.char || 'Сцена')}</span><span class="bb-moment-stamp${hasSource ? ' bb-moment-stamp-deletable' : ''}" ${hasSource ? `data-msg-idx="${moment.msgIndex}" data-update-idx="${moment.updateIdx}"` : ''}><span class="bb-moment-stamp-text">Запись ${currentStoryMoments.length - index}</span><span class="bb-moment-stamp-delete">¿quieres?</span></span></div><span class="bb-moment-title">${escapeHtml(moment.title)}</span></div><div class="bb-moment-divider"></div><div class="bb-moment-body"><div class="bb-moment-text">${escapeHtml(moment.text)}</div>${hasSource ? `<div class="bb-moment-btns"><button type="button" class="bb-moment-action-btn bb-moment-edit-btn" data-msg-idx="${moment.msgIndex}" data-update-idx="${moment.updateIdx}" title="Редактировать"><i class="fa-solid fa-pen-to-square"></i></button></div>` : ''}</div></div>`;
+            });
             momentsHtml += '</div>'; momentsBox.innerHTML = momentsHtml;
+            bindMomentEditHandlers();
+            bindMomentDeleteHandlers();
+            startStampCycle();
         }
     }
     syncToastContainerWithHud();
+    bindMemoryPillEditHandlers();
+    bindMemoryPillDeleteHandlers();
+    bindTraitEditHandlers();
+    bindTraitDeleteHandlers();
+
+    // Restore previously expanded/editor-open states and scroll position
+    restoreCardExpansionStates(savedStates);
+    if (scroller) scroller.scrollTop = savedScrollTop;
+
+    // Detect name overflow and enable marquee scrolling
+    detectNameOverflow();
+}
+
+function detectNameOverflow() {
+    document.querySelectorAll('.bb-char-name-compact').forEach(nameEl => {
+        const container = nameEl.parentElement;
+        if (!container) return;
+        const containerWidth = container.clientWidth;
+
+        // Measure actual text width via Range API (scrollWidth is unreliable with overflow:visible)
+        const range = document.createRange();
+        range.selectNodeContents(nameEl);
+        const nameWidth = range.getBoundingClientRect().width;
+
+        if (nameWidth > containerWidth + 2) {
+            const scrollDist = nameWidth - containerWidth;
+            const duration = Math.max(6, Math.min(18, scrollDist / 12));
+            nameEl.style.setProperty('--bb-name-scroll', `-${scrollDist}px`);
+            nameEl.style.setProperty('--bb-name-dur', `${duration}s`);
+            nameEl.classList.add('bb-name-overflow');
+        } else {
+            nameEl.classList.remove('bb-name-overflow');
+            nameEl.style.removeProperty('--bb-name-scroll');
+            nameEl.style.removeProperty('--bb-name-dur');
+        }
+    });
 }
 
 export function updateHudVisibility() {
@@ -1276,6 +2193,9 @@ export function ensureHudContainer() {
         </div>
     `;
     jQuery('body').append(hudHtml);
+
+    // Apply moment render classes from settings (antialiased, force-gpu)
+    applyMomentRenderClasses();
 
     jQuery('.bb-hud-tab').on('click', function() {
         jQuery('.bb-hud-tab').removeClass('active'); jQuery('.bb-hud-content').removeClass('active');
