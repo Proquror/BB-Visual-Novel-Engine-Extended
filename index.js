@@ -372,6 +372,31 @@ jQuery(async () => {
             });
         }
 
+        // Critical: update stats + prompt BEFORE SillyTavern builds the generation
+        // prompt. Without this, a swipe regeneration would use the STALE prompt
+        // that still contains the old swipe's relationship data — violating swipe
+        // isolation (the whole point of swiping is that the old result never
+        // influences the new one).
+        //
+        // We hook into two pre-prompt-build events as belt-and-suspenders:
+        //  1. GENERATION_AFTER_COMMANDS — earliest hook (right after slash commands)
+        //  2. GENERATE_BEFORE_COMBINE_PROMPTS — later hook (right before prompt
+        //     assembly).  This is the fallback if the ST version doesn't have the
+        //     first event, or if the message state wasn't updated yet when the
+        //     first event fired.
+        if (event_types.GENERATION_AFTER_COMMANDS) {
+            eventSource.on(event_types.GENERATION_AFTER_COMMANDS, () => {
+                console.warn('[BB VN] GENERATION_AFTER_COMMANDS: recalculating stats before prompt build');
+                recalculateAllStats();
+            });
+        }
+        if (event_types.GENERATE_BEFORE_COMBINE_PROMPTS) {
+            eventSource.on(event_types.GENERATE_BEFORE_COMBINE_PROMPTS, () => {
+                console.warn('[BB VN] GENERATE_BEFORE_COMBINE_PROMPTS: recalculating stats before prompt assembly');
+                recalculateAllStats();
+            });
+        }
+
         eventSource.on(event_types.GENERATE_AFTER_DATA, (generate_data) => {
             if (!isRelationshipTrackerDisabled() && extension_settings[MODULE_NAME].useMacro && generate_data) {
                 const promptText = getCombinedSocial();

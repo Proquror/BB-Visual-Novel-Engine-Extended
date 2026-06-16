@@ -2,7 +2,7 @@
     "name": "BB-Visual-Novel Extended",
     "display_name": "BB Visual Novel Engine Extended",
     "description": "Cистема отношений, визуальная новелла и генерация ответов.",
-    "version": "3.2.0 Release",
+    "version": "3.3.0 Release",
     "author": "BruniikBron (mod by Proquror)",
     "js": "index.js",
     "css": "style.css",
