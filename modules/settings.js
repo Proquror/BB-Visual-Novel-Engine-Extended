@@ -5,6 +5,7 @@ import { MODULE_NAME, normalizeImpactSettings, normalizeImpactValue, normalizeVn
 import { recalculateAllStats, injectCombinedSocialPrompt, addGlobalLog, bindActivePersonaState, getCurrentPersonaScopeKey, mergeCharacterRecords, resolveCharacterIdentity, exportActivePersonaSnapshot, importActivePersonaSnapshot, clearActivePersonaSnapshot, editSocialUpdate, getSocialUpdatesForMessage, deleteSocialUpdate } from './social.js';
 import { notifySuccess, notifyInfo, notifyError, showHudToast } from './toasts.js';
 import { restoreVNOptions, clearSavedVNOptions } from './generator.js';
+import { updateVnGeneratorEnabledState } from './actions.js';
 
 const IMPACT_SETTING_FIELDS = [
     { key: 'unforgivable', token: 'unforgivable', title: 'Критический минус', hint: 'Тяжёлый удар по доверию или влечению' },
@@ -243,6 +244,7 @@ export function setupExtensionSettings() {
                         <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-autogen" ${s.autoGen ? 'checked' : ''}><span>Авто-показ вариантов действий</span></label>
                         <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-emotional-choice" ${s.emotionalChoiceFraming ? 'checked' : ''}><span>Тон и прогноз вариантов</span></label>
                         <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-disable-tracker" ${s.disableRelationshipTracker ? 'checked' : ''}><span>Отключить трекер отношений</span></label>
+                        <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-disable-generator" ${s.disableGenerator ? 'checked' : ''}><span>Отключить генератор действий</span></label>
                         <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-moment-antialiased" ${s.momentAntialiased !== false ? 'checked' : ''}><span>Сглаживание текста в Дневнике</span></label>
                         <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-moment-force-gpu" ${s.momentForceGPU === true ? 'checked' : ''}><span>Принудительный GPU-рендеринг карточек</span></label>
                     </div>
@@ -475,6 +477,16 @@ export function setupExtensionSettings() {
         recalculateAllStats(false);
         if (typeof window.updateHudVisibility === 'function') window.updateHudVisibility();
         if (typeof window.renderSocialHud === 'function') window.renderSocialHud();
+    });
+    jQuery('#bb-vn-cfg-disable-generator').on('change', function() {
+        extension_settings[MODULE_NAME].disableGenerator = jQuery(this).is(':checked');
+        saveSettingsDebounced();
+        // Sync the inline toggle button next to the chat input + clear any open panel.
+        updateVnGeneratorEnabledState();
+        // If we just re-enabled the generator, try to restore saved options for the current message.
+        if (!extension_settings[MODULE_NAME].disableGenerator) {
+            restoreVNOptions(false);
+        }
     });
     jQuery('#bb-vn-cfg-moment-antialiased').on('change', function() {
         extension_settings[MODULE_NAME].momentAntialiased = jQuery(this).is(':checked');

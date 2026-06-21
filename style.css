@@ -861,6 +861,116 @@ body.bb-hud-popup-active #bb-social-toast-container {
 .bb-vn-main-btn.loading::before { animation-play-state: paused; opacity: 0; }
 .bb-vn-main-btn.loading:hover { border-color: #ef4444; color: #ef4444; animation: none; box-shadow: 0 0 15px rgba(239, 68, 68, 0.3); }
 
+/* ─── Generator on/off toggle (sits to the right of "Действия VN") ─── */
+.bb-vn-action-row {
+    display: flex;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 8px;
+    width: 100%;
+}
+.bb-vn-action-row .bb-vn-main-btn {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle {
+    flex: 0 0 auto;
+    width: 44px;
+    min-height: 40px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 13px;
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    background: linear-gradient(180deg, rgba(15, 20, 30, 0.94), rgba(13, 18, 28, 0.92));
+    color: #7dd3fc;
+    cursor: pointer;
+    box-shadow: 0 12px 24px rgba(0, 0, 0, 0.22);
+    transition: border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, opacity 0.2s ease, transform 0.15s ease;
+    position: relative;
+    overflow: hidden;
+}
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle .bb-vn-gen-toggle__content {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    pointer-events: none;
+    /* Sit above the decorative ::after slash so text stays crisp */
+    position: relative;
+    z-index: 1;
+}
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle i {
+    font-size: 15px;
+    line-height: 1;
+    filter: drop-shadow(0 0 6px rgba(125, 211, 252, 0.35));
+}
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle:hover {
+    border-color: rgba(125, 211, 252, 0.5);
+    color: #bae6fd;
+    box-shadow: 0 14px 26px rgba(0, 0, 0, 0.24), 0 0 14px rgba(125, 211, 252, 0.18);
+    transform: translateY(-1px);
+}
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle:active {
+    transform: translateY(0);
+}
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle:focus-visible {
+    outline: 2px solid rgba(125, 211, 252, 0.6);
+    outline-offset: 2px;
+}
+/* "off" state — expands into a labelled "turn on" button so the user always
+   has an obvious re-enable affordance right where the main button used to be. */
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle.is-disabled {
+    flex: 1 1 auto;
+    width: auto;
+    min-height: 40px;
+    padding: 9px 14px;
+    color: #f472b6;
+    border-color: rgba(244, 114, 182, 0.34);
+    background: linear-gradient(180deg, rgba(28, 18, 26, 0.94), rgba(20, 13, 18, 0.92));
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.24), 0 0 14px rgba(244, 114, 182, 0.12);
+    opacity: 0.96;
+}
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle.is-disabled i {
+    filter: none;
+    font-size: 14px;
+}
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle.is-disabled .bb-vn-gen-toggle__label {
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    line-height: 1.1;
+    white-space: nowrap;
+}
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle.is-disabled::after {
+    /* centered diagonal "disabled" watermark, sits behind the icon+label */
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 54%;
+    height: 1.6px;
+    background: rgba(244, 114, 182, 0.34);
+    transform: translate(-50%, -50%) rotate(-32deg);
+    transform-origin: center center;
+    border-radius: 2px;
+    pointer-events: none;
+    opacity: 0.6;
+    z-index: 0;
+}
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle.is-disabled:hover {
+    color: #f9a8d4;
+    border-color: rgba(244, 114, 182, 0.6);
+    box-shadow: 0 12px 26px rgba(0, 0, 0, 0.26), 0 0 18px rgba(244, 114, 182, 0.22);
+    opacity: 1;
+}
+#bb-vn-btn-toggle-generator.bb-vn-gen-toggle.is-disabled:hover::after {
+    background: rgba(244, 114, 182, 0.6);
+    opacity: 0.85;
+}
+
 @keyframes pulseGlow { 0%, 100% { box-shadow: 0 0 5px rgba(245, 158, 11, 0.2); } 50% { box-shadow: 0 0 15px rgba(245, 158, 11, 0.6); } }
 @keyframes bbVnSavedPulse {
     0%, 100% {
@@ -1304,6 +1414,26 @@ body.bb-hud-popup-active #bb-social-toast-container {
 
 /* ФИКС МОБИЛЬНЫХ КНОПОК И ОТСТУПОВ */
 @media (max-width: 600px) {
+    .bb-vn-action-row {
+        gap: 6px;
+    }
+    #bb-vn-btn-toggle-generator.bb-vn-gen-toggle {
+        width: 40px;
+        min-height: 38px;
+    }
+    #bb-vn-btn-toggle-generator.bb-vn-gen-toggle i {
+        font-size: 14px;
+    }
+    #bb-vn-btn-toggle-generator.bb-vn-gen-toggle.is-disabled {
+        padding: 8px 10px;
+    }
+    #bb-vn-btn-toggle-generator.bb-vn-gen-toggle.is-disabled .bb-vn-gen-toggle__content {
+        gap: 8px;
+    }
+    #bb-vn-btn-toggle-generator.bb-vn-gen-toggle.is-disabled .bb-vn-gen-toggle__label {
+        font-size: 10px;
+        letter-spacing: 0.6px;
+    }
     .bb-vn-option {
         min-width: 0 !important;
         padding: 7px 9px !important;
@@ -3576,6 +3706,51 @@ body.bb-hud-popup-active #bb-social-toast-container {
 .bb-toolbar-btn.active {
     color: #f8fafc; background: rgba(192,132,252,0.18); border-color: rgba(192,132,252,0.4);
     box-shadow: 0 0 8px rgba(192,132,252,0.2);
+}
+
+/* ─── Generator toggle button in the HUD toolbar ─── */
+/* "on" state: bright cyan accent, signals "generator active" */
+.bb-toolbar-btn--gen-toggle {
+    color: #7dd3fc;
+    border-color: rgba(125, 211, 252, 0.28);
+    background: rgba(125, 211, 252, 0.08);
+}
+.bb-toolbar-btn--gen-toggle i {
+    filter: drop-shadow(0 0 4px rgba(125, 211, 252, 0.4));
+}
+.bb-toolbar-btn--gen-toggle:hover {
+    color: #bae6fd;
+    background: rgba(125, 211, 252, 0.14);
+    border-color: rgba(125, 211, 252, 0.5);
+}
+/* "off" state: dimmed + diagonal slash watermark */
+.bb-toolbar-btn--gen-toggle.is-disabled {
+    color: #94a3b8;
+    border-color: rgba(148, 163, 184, 0.16);
+    background: rgba(244, 114, 182, 0.06);
+    opacity: 0.72;
+}
+.bb-toolbar-btn--gen-toggle.is-disabled i {
+    filter: none;
+}
+.bb-toolbar-btn--gen-toggle.is-disabled::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 82%;
+    height: 1.5px;
+    background: rgba(244, 114, 182, 1);
+    transform: translate(-50%, -50%) rotate(-32deg);
+    transform-origin: center center;
+    border-radius: 2px;
+    pointer-events: none;
+}
+.bb-toolbar-btn--gen-toggle.is-disabled:hover {
+    color: #f472b6;
+    border-color: rgba(244, 114, 182, 0.45);
+    background: rgba(244, 114, 182, 0.12);
+    opacity: 1;
 }
 .bb-toolbar-badge {
     position: absolute; top: -4px; right: -4px;
