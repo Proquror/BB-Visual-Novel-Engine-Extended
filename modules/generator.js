@@ -392,7 +392,30 @@ function logOptionsJsonFailure(rawText = '', errors = [], stage = 'initial') {
     });
 }
 
+function isEmptyRepairInput(rawText = '') {
+    const trimmed = String(rawText || '').trim();
+    if (!trimmed) return true;
+    if (trimmed === '{}' || trimmed === '[]') return true;
+    // markdown fences around empty JSON
+    const stripped = trimmed
+        .replace(/```json/gi, '')
+        .replace(/```/g, '')
+        .trim();
+    return !stripped || stripped === '{}' || stripped === '[]';
+}
+
 async function repairOptionsJson(rawText = '') {
+    // Guard: if ST returned an empty object/array (typical Anthropic-via-ST
+    // post-processing failure when strict json_schema doesn't match), there
+    // is nothing to repair. Calling the model on an empty BROKEN INPUT
+    // causes it to hallucinate chat messages as if they were options.
+    if (isEmptyRepairInput(rawText)) {
+        console.warn('[BB VN] repairOptionsJson: input is empty, skipping repair to avoid hallucination.', {
+            inputPreview: String(rawText || '').slice(0, 200),
+        });
+        return '';
+    }
+
     const repairPrompt = `You repair malformed JSON arrays for an internal roleplay tool.
 
 Return ONLY a valid JSON array with exactly 3 objects.
@@ -404,11 +427,17 @@ If a field is missing, use an empty string or[] instead of removing the object.
 BROKEN INPUT:
 ${String(rawText || '').trim()}`;
 
+    // NOTE: jsonSchema is intentionally NOT passed here.
+    // The repair prompt asks for a bare JSON array, but getVnOptionsJsonSchema()
+    // describes an object {"options":[...]}. Passing both contradicts each other
+    // and on Anthropic-via-ST the strict-schema post-processor silently
+    // replaces the model's array output with an empty object {}.
+    // responseFormat='text' lets the model return a bare array unmolested,
+    // which parseModelJson can then extract via extractBalancedSegment.
     const generationResult = await generateFastPrompt(repairPrompt, {
-        responseFormat: 'json',
+        responseFormat: 'text',
         includeMeta: true,
         responseLength: JSON_REPAIR_RESPONSE_LENGTH_TOKENS,
-        jsonSchema: getVnOptionsJsonSchema(),
     });
     return typeof generationResult === 'string'
         ? generationResult
@@ -1171,12 +1200,30 @@ export async function bbVnGenerateOptionsFlow(request = []) {
             };
         };
 
-        const generationResult = await generateFastPrompt(prompt, {
+        // NOTE: jsonSchema is intentionally NOT passed for the main API.
+        // On Anthropic-via-ST (e.g. [SP]claude-* models), ST forwards
+        // response_format.json_schema to the proxy, but Anthropic does not
+        // enforce OpenAI-style strict schemas. The model returns a valid
+        // bare JSON array (sometimes markdown-fenced), but ST's "semi"
+        // post-processor then tries to validate it against the schema
+        // (which describes {"options":[...]}), fails, and silently
+        // replaces the content with an empty object {} — which is what
+        // the extension sees as `result`.
+        // Skipping jsonSchema here lets the raw model output flow through
+        // unchanged; parseModelJson + extractBalancedSegment handle the rest.
+        // For custom-api (OpenAI-compatible proxies) we still attach the
+        // schema because those backends typically honour it correctly.
+        const s = extension_settings[MODULE_NAME];
+        const useCustomApi = !!(s?.useCustomApi && s?.customApiUrl && s?.customApiModel);
+        const generationRequestOptions = {
             responseFormat: 'json',
             includeMeta: true,
             responseLength: getOptionsResponseLength(replyLength),
-            jsonSchema: getVnOptionsJsonSchema(),
-        });
+        };
+        if (useCustomApi) {
+            generationRequestOptions.jsonSchema = getVnOptionsJsonSchema();
+        }
+        const generationResult = await generateFastPrompt(prompt, generationRequestOptions);
         ensureActiveVnOptionsGeneration(requestToken);
         const result = typeof generationResult === 'string'
             ? generationResult
@@ -1191,16 +1238,44 @@ export async function bbVnGenerateOptionsFlow(request = []) {
 
         ensureActiveVnOptionsGeneration(requestToken);
 
+        // Defensive guard: if ST returned an empty object/array (the typical
+        // Anthropic-via-ST strict-schema failure mode), do not even attempt
+        // to "repair" — there is nothing to repair, and calling the model on
+        // empty input causes it to hallucinate chat messages as options.
+        if (isEmptyRepairInput(result)) {
+            console.warn('[BB VN] Main API returned empty/placeholder content, aborting without repair.', {
+                provider,
+                finishReason,
+                resultPreview: String(result || '').slice(0, 200),
+                resultLength: String(result || '').length,
+            });
+            throw new Error('Модель вернула пустой ответ. Попробуйте реролл или переключите провайдера.');
+        }
+
         let recoveredPayload = extractOptionsFromGeneration(result);
         let recoveredOptions = recoveredPayload.options;
         if (!recoveredPayload.ok) {
             console.warn('[BB VN] Initial options JSON parse failed. Attempting repair...', {
                 errors: recoveredPayload.errors,
+                resultLength: String(result || '').length,
+                // Dump the full raw result so future debugging is possible.
+                // Previously only ~260 chars around the parse error position
+                // were logged, which was never enough to diagnose real-world
+                // failures on Anthropic/OpenAI proxies.
+                fullResult: String(result || ''),
             });
             logOptionsJsonFailure(result, recoveredPayload.errors, 'initial');
 
             const repairedResult = await repairOptionsJson(result);
             ensureActiveVnOptionsGeneration(requestToken);
+            if (isEmptyRepairInput(repairedResult)) {
+                // Repair explicitly returned empty (input was already empty or
+                // the model returned nothing usable). Skip re-parsing.
+                console.warn('[BB VN] repairOptionsJson returned empty content, giving up.', {
+                    repairedPreview: String(repairedResult || '').slice(0, 200),
+                });
+                throw new Error('Модель вернула поврежденный JSON, сделайте реролл.');
+            }
             recoveredPayload = extractOptionsFromGeneration(repairedResult);
             recoveredOptions = recoveredPayload.options;
             if (!recoveredPayload.ok) {
