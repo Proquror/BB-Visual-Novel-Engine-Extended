@@ -18,6 +18,7 @@ export const DEFAULT_SETTINGS = {
     useMacro: false,
     emotionalChoiceFraming: true,
     disableRelationshipTracker: false,
+    disableGenerator: false,
     vnReplyLength: 'medium',
     friendshipImpactValues: { ...DEFAULT_IMPACT_VALUES },
     romanceImpactValues: { ...DEFAULT_IMPACT_VALUES },

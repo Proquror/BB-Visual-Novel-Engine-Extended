@@ -2213,9 +2213,28 @@ function toggleExtensionEnabled() {
     if (checkbox) checkbox.checked = nowDisabled;
 }
 
+/**
+ * Update the generator toggle button in the HUD toolbar to reflect the
+ * current disableGenerator setting. Called from updateVnGeneratorEnabledState
+ * (actions.js) via window.updateGeneratorToolbarButton, and also from
+ * updateHudVisibility() so it stays in sync.
+ */
+export function updateGeneratorToolbarButton() {
+    const disabled = extension_settings[MODULE_NAME]?.disableGenerator === true;
+    const btn = document.getElementById('bb-toolbar-btn-gen-toggle');
+    if (!btn) return;
+    btn.classList.toggle('is-disabled', disabled);
+    btn.title = disabled
+        ? 'Генератор отключён — нажмите, чтобы включить'
+        : 'Генератор действий — нажмите, чтобы отключить';
+    btn.setAttribute('aria-pressed', disabled ? 'true' : 'false');
+}
+
 export function updateHudVisibility() {
     const isDisabled = extension_settings[MODULE_NAME]?.disableRelationshipTracker === true;
     updateHudDisabledState(isDisabled);
+    // Keep the generator toolbar button in sync with the setting.
+    updateGeneratorToolbarButton();
 
     const context = SillyTavern.getContext();
     if (!hasContextInitialized(context)) {
@@ -2291,7 +2310,7 @@ export function ensureHudContainer() {
         <button type="button" id="bb-social-hud-mobile-launcher" aria-label="Открыть HUD"><i class="fa-solid fa-users-viewfinder"></i><span>VNE</span></button>
         <div id="bb-social-hud">
             <div id="bb-social-hud-toggle" title="VNE HUD"><i class="fa-solid fa-users-viewfinder"></i><span class="bb-toggle-label">VNE</span><i class="fa-solid fa-chevron-left" id="bb-hud-arrow"></i></div>
-            <div class="bb-hud-header"><div class="bb-hud-header-top"><span class="bb-hud-badge">Visual Novel Engine</span><div class="bb-hud-status-row"><span class="bb-hud-live-dot"><i class="fa-solid fa-circle"></i> активно</span><button type="button" class="bb-hud-mobile-close" aria-label="Закрыть HUD"><i class="fa-solid fa-xmark"></i></button></div></div><div class="bb-hud-title-row"><div class="bb-hud-title">VNE</div><div class="bb-toolbar"><button type="button" class="bb-toolbar-btn" data-toolbar="settings" title="Настройки"><i class="fa-solid fa-gear"></i></button><button type="button" class="bb-toolbar-btn" data-toolbar="dev" title="Консоль разработчика"><i class="fa-solid fa-screwdriver-wrench"></i></button><button type="button" class="bb-toolbar-btn" data-toolbar="export" title="Экспорт"><i class="fa-solid fa-file-export"></i></button><button type="button" class="bb-toolbar-btn" data-toolbar="import" title="Импорт"><i class="fa-solid fa-file-import"></i></button><button type="button" class="bb-toolbar-btn" data-toolbar="hidden" title="Скрытые персонажи"><i class="fa-solid fa-eye-slash"></i></button></div></div><div class="bb-hud-subtitle">связи · журнал · дневник событий</div></div>
+            <div class="bb-hud-header"><div class="bb-hud-header-top"><span class="bb-hud-badge">Visual Novel Engine</span><div class="bb-hud-status-row"><span class="bb-hud-live-dot"><i class="fa-solid fa-circle"></i> активно</span><button type="button" class="bb-hud-mobile-close" aria-label="Закрыть HUD"><i class="fa-solid fa-xmark"></i></button></div></div><div class="bb-hud-title-row"><div class="bb-hud-title">VNE</div><div class="bb-toolbar"><button type="button" class="bb-toolbar-btn" data-toolbar="settings" title="Настройки"><i class="fa-solid fa-gear"></i></button><button type="button" class="bb-toolbar-btn" data-toolbar="dev" title="Консоль разработчика"><i class="fa-solid fa-screwdriver-wrench"></i></button><button type="button" class="bb-toolbar-btn" data-toolbar="export" title="Экспорт"><i class="fa-solid fa-file-export"></i></button><button type="button" class="bb-toolbar-btn" data-toolbar="import" title="Импорт"><i class="fa-solid fa-file-import"></i></button><button type="button" class="bb-toolbar-btn" data-toolbar="hidden" title="Скрытые персонажи"><i class="fa-solid fa-eye-slash"></i></button><button type="button" class="bb-toolbar-btn bb-toolbar-btn--gen-toggle" id="bb-toolbar-btn-gen-toggle" data-toolbar="gen-toggle" title="Генератор действий" aria-pressed="false"><i class="fa-solid fa-clapperboard"></i></button></div></div><div class="bb-hud-subtitle">связи · журнал · дневник событий</div></div>
             <div class="bb-hud-tabs"><div class="bb-hud-tab active" data-tab="chars"><i class="fa-solid fa-heart-pulse"></i><span>Связи</span></div><div class="bb-hud-tab" data-tab="log"><i class="fa-solid fa-terminal"></i><span>Система</span></div><div class="bb-hud-tab" data-tab="moments"><i class="fa-solid fa-book-open"></i><span>Дневник</span></div></div>
             <div class="bb-hud-content active" id="bb-hud-chars"></div><div class="bb-hud-content" id="bb-hud-log"></div><div class="bb-hud-content" id="bb-hud-moments"></div>
         </div>
@@ -2369,6 +2388,9 @@ export function ensureHudContainer() {
         overlay.innerHTML = '';
         activeToolbarPopup = null;
         jQuery('.bb-toolbar-btn').removeClass('active');
+        // Restore HUD/toolbar stacking priority (was lowered so the popup
+        // could render above the HUD on mobile).
+        setHudPopupPriority(false);
     };
 
     // Expose closeToolbarPopup so closeSocialHud can call it
@@ -2379,6 +2401,10 @@ export function ensureHudContainer() {
         if (activeToolbarPopup === type) { closeToolbarPopup(); return; }
         closeToolbarPopup();
         activeToolbarPopup = type;
+        // Lower HUD/backdrop/toast z-index so the popup overlay renders above
+        // them — critical on mobile where #bb-social-hud.open is z-index 9999
+        // and would otherwise sit on top of the popup (z-index 10000).
+        setHudPopupPriority(true);
 
         const settingsShell = document.querySelector('.bb-vn-settings-shell');
         if (!settingsShell) { notifyError('Панель настроек не найдена.'); return; }
@@ -2505,9 +2531,34 @@ export function ensureHudContainer() {
         jQuery(`.bb-toolbar-btn[data-toolbar="${type}"]`).addClass('active');
     };
 
+    // Generator toggle — does NOT open a popup, just flips the setting.
+    const toggleGeneratorFromToolbar = () => {
+        closeToolbarPopup();
+        const nextDisabled = !(extension_settings[MODULE_NAME]?.disableGenerator === true);
+        extension_settings[MODULE_NAME].disableGenerator = nextDisabled;
+        saveSettingsDebounced();
+        // updateVnGeneratorEnabledState hides/shows the action bar and calls
+        // updateGeneratorToolbarButton to sync this very button.
+        if (typeof window.updateVnGeneratorEnabledState === 'function') {
+            window.updateVnGeneratorEnabledState();
+        } else {
+            updateGeneratorToolbarButton();
+        }
+        if (!nextDisabled) {
+            restoreVNOptions(false);
+        }
+        notifyInfo(nextDisabled
+            ? 'Генератор вариантов действий отключён. Панель действий скрыта.'
+            : 'Генератор вариантов действий включён. Кнопка «Действия VN» снова доступна.');
+    };
+
     // Bind toolbar buttons
     jQuery('.bb-toolbar-btn').on('click', function() {
         const type = jQuery(this).attr('data-toolbar');
+        if (type === 'gen-toggle') {
+            toggleGeneratorFromToolbar();
+            return;
+        }
         openToolbarPopup(type);
     });
 
@@ -2532,4 +2583,6 @@ export function ensureHudContainer() {
     if (extension_settings[MODULE_NAME]?.disableRelationshipTracker === true) {
         updateHudDisabledState(true);
     }
+    // Sync the generator toolbar button with the current setting on init.
+    updateGeneratorToolbarButton();
 }

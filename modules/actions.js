@@ -1,5 +1,5 @@
 /* global SillyTavern */
-import { callPopup, chat_metadata, saveChatDebounced } from '../../../../../script.js';
+import { callPopup, chat_metadata, saveChatDebounced, saveSettingsDebounced } from '../../../../../script.js';
 import { extension_settings } from '../../../../extensions.js';
 import { MODULE_NAME } from './constants.js';
 import {
@@ -10,6 +10,7 @@ import {
 import {
     bbVnGenerateOptionsFlow,
     clearSavedVNOptions,
+    restoreVNOptions,
 } from './generator.js';
 import { injectCombinedSocialPrompt } from './social.js';
 import { notifyInfo } from './toasts.js';
@@ -317,15 +318,134 @@ export function renderVNOptionsFromData(parsedOptions, autoOpen = false) {
 
 window['renderVNOptionsFromData'] = renderVNOptionsFromData;
 
+function isGeneratorDisabled() {
+    return extension_settings[MODULE_NAME]?.disableGenerator === true;
+}
+
+function buildGeneratorToggleContent() {
+    // When disabled, the toggle expands into a labelled "turn on" button so the
+    // user always has an obvious re-enable affordance right where the main
+    // button used to live. When enabled, it stays a compact icon-only button.
+    const disabled = isGeneratorDisabled();
+    if (disabled) {
+        return `
+            <span class="bb-vn-gen-toggle__content">
+                <i class="fa-solid fa-power-off"></i>
+                <span class="bb-vn-gen-toggle__label">Генератор выключен</span>
+            </span>
+        `;
+    }
+    return `
+        <span class="bb-vn-gen-toggle__content">
+            <i class="fa-solid fa-power-off"></i>
+        </span>
+    `;
+}
+
+/**
+ * Synchronises the VN generator enabled/disabled UI state.
+ * - When the generator is disabled: hides the entire #bb-vn-action-bar
+ *   (main button + inline toggle + options panel), and renders the HUD
+ *   toolbar button in "off" state. The re-enable affordance lives in the
+ *   HUD toolbar (and the settings pill as a backup).
+ * - When enabled: shows the action bar with the main button + inline toggle.
+ * Also keeps the settings checkbox and HUD toolbar button in sync.
+ */
+export function updateVnGeneratorEnabledState() {
+    const disabled = isGeneratorDisabled();
+    const toggle = jQuery('#bb-vn-btn-toggle-generator');
+    const mainBtn = jQuery('#bb-vn-btn-generate');
+    const optionsContainer = jQuery('#bb-vn-options-container');
+    const actionBar = document.getElementById('bb-vn-action-bar');
+
+    if (toggle.length) {
+        toggle
+            .toggleClass('is-disabled', disabled)
+            .attr('title', disabled
+                ? 'Генератор действий отключён — нажми, чтобы включить'
+                : 'Отключить генератор действий')
+            .attr('aria-pressed', disabled ? 'true' : 'false')
+            .html(buildGeneratorToggleContent());
+    }
+
+    if (disabled) {
+        // Close and clear any open VN options panel
+        if (optionsContainer.length) {
+            stopVnPanelAnimation(optionsContainer);
+            optionsContainer.removeClass('active is-closing is-opening');
+            optionsContainer.empty();
+        }
+        if (mainBtn.length) {
+            mainBtn.removeClass('loading has-saved');
+            mainBtn.hide();
+        }
+        // Hide the entire action bar — the re-enable affordance is the HUD
+        // toolbar button (and the settings pill).
+        if (actionBar) actionBar.style.display = 'none';
+    } else {
+        if (actionBar) actionBar.style.display = 'flex';
+        if (mainBtn.length) {
+            setVnGenerateButtonIdle({ hasSaved: hasRenderedVnOptions() });
+            const ta = document.querySelector('#send_textarea');
+            const textareaBusy = ta instanceof HTMLTextAreaElement && ta.value.trim().length > 0;
+            const panelOpen = optionsContainer.length && optionsContainer.hasClass('active');
+            if (!textareaBusy && !panelOpen) {
+                mainBtn.show();
+            }
+        }
+    }
+
+    // Sync the settings panel checkbox if it exists
+    const checkbox = document.getElementById('bb-vn-cfg-disable-generator');
+    if (checkbox) checkbox.checked = disabled;
+
+    // Sync the HUD toolbar generator toggle button
+    if (typeof window.updateGeneratorToolbarButton === 'function') {
+        window.updateGeneratorToolbarButton();
+    }
+}
+
+function toggleGeneratorEnabled() {
+    const nextDisabled = !isGeneratorDisabled();
+    extension_settings[MODULE_NAME].disableGenerator = nextDisabled;
+    if (typeof saveSettingsDebounced === 'function') saveSettingsDebounced();
+
+    updateVnGeneratorEnabledState();
+
+    // If we just re-enabled the generator, try to restore any saved options
+    // for the current message (mirrors the tracker re-enable flow).
+    if (!nextDisabled && typeof restoreVNOptions === 'function') {
+        restoreVNOptions(false);
+    }
+
+    notifyInfo(nextDisabled
+        ? 'Генератор вариантов действий отключён. Кнопка «Действия VN» скрыта.'
+        : 'Генератор вариантов действий включён. Кнопка «Действия VN» снова доступна.');
+}
+
 export function injectVNActionsUI() {
-    if (document.getElementById('bb-vn-action-bar')) return;
-    const barHtml = '<div id="bb-vn-action-bar" style="display: flex;"><div id="bb-vn-btn-generate" class="bb-vn-main-btn" title="Открыть панель действий VN"></div><div id="bb-vn-options-container"></div></div>';
+    if (document.getElementById('bb-vn-action-bar')) {
+        // Ensure the toggle reflects the current setting on re-injection.
+        updateVnGeneratorEnabledState();
+        return;
+    }
+    const barHtml = `
+        <div id="bb-vn-action-bar" style="display: flex;">
+            <div class="bb-vn-action-row">
+                <div id="bb-vn-btn-generate" class="bb-vn-main-btn" title="Открыть панель действий VN"></div>
+                <button type="button" id="bb-vn-btn-toggle-generator" class="bb-vn-gen-toggle" title="Отключить генератор действий" aria-pressed="false"></button>
+            </div>
+            <div id="bb-vn-options-container"></div>
+        </div>
+    `;
     jQuery('#send_form').prepend(barHtml);
     setVnGenerateButtonIdle();
+    updateVnGeneratorEnabledState();
 
     const ta = document.querySelector('#send_textarea');
     if (ta instanceof HTMLTextAreaElement) {
         ta.addEventListener('input', () => {
+            if (isGeneratorDisabled()) return;
             const btn = document.getElementById('bb-vn-btn-generate');
             const opts = document.getElementById('bb-vn-options-container');
             if (ta.value.trim().length > 0) {
@@ -337,6 +457,7 @@ export function injectVNActionsUI() {
     }
 
     jQuery('#bb-vn-btn-generate').on('click', function() {
+        if (isGeneratorDisabled()) return;
         const container = jQuery('#bb-vn-options-container');
         if (container.children('.bb-vn-option[data-intent]').length > 0) {
             openVnPanel(container);
@@ -344,5 +465,10 @@ export function injectVNActionsUI() {
         } else {
             renderVnActionPanel(true);
         }
+    });
+
+    jQuery('#bb-vn-btn-toggle-generator').on('click', function(e) {
+        e.stopPropagation();
+        toggleGeneratorEnabled();
     });
 }

@@ -1117,9 +1117,14 @@ export function tryBindPendingChoiceContextToMessage(msg) {
 }
 
 export async function bbVnGenerateOptionsFlow(request = []) {
+    // Generator disabled — refuse to run, keep the UI quiet.
+    if (extension_settings[MODULE_NAME]?.disableGenerator === true) {
+        notifyInfo('Генератор вариантов действий отключён. Включите его кнопкой рядом с полем ввода.');
+        return;
+    }
     const btn = jQuery('#bb-vn-btn-generate');
     const generationRequest = normalizeOptionsGenerationRequest(request);
-    
+
     if (btn.hasClass('loading')) {
         createVnOptionsGenerationToken();
         cancelVnGeneration();
@@ -1397,6 +1402,14 @@ export async function bbVnGenerateOptionsFlow(request = []) {
 }
 
 export function restoreVNOptions(autoOpen = false) {
+    // When the generator is disabled, do not render any saved options and do
+    // NOT call clearVNOptions() — that would re-show the main button. We only
+    // need to drop any rendered cards; the toggle button stays available so the
+    // user can re-enable the generator.
+    if (extension_settings[MODULE_NAME]?.disableGenerator === true) {
+        resetVnOptionsContainer({ clear: true });
+        return;
+    }
     const chat = SillyTavern.getContext().chat;
     if (!chat || chat.length === 0) {
         clearVNOptions();
@@ -1421,6 +1434,11 @@ export function restoreVNOptions(autoOpen = false) {
 
 export function clearVNOptions() {
     resetVnOptionsContainer({ clear: true });
+    // Generator disabled: keep the main button hidden — the toggle controls visibility.
+    if (extension_settings[MODULE_NAME]?.disableGenerator === true) {
+        jQuery('#bb-vn-btn-generate').hide();
+        return;
+    }
     const ta = document.querySelector('#send_textarea');
     const btn = jQuery('#bb-vn-btn-generate');
     setVnGenerateButtonIdle({ hasSaved: false });
