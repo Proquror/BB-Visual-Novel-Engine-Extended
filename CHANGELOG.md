@@ -6,6 +6,40 @@
 
 ---
 
+## [3.4.0] - 22 June 2026
+
+### Added
+
+- **Отключение генератора вариантов действий** — возможность полностью выключить генератор VN-вариантов (аналогично отключению трекера отношений). При отключении панель «Действия VN» скрывается целиком, точка повторного включения — кнопка 🎬 в тулбаре HUD, inline-тумблер у поля ввода или pill в настройках. Гард в `bbVnGenerateOptionsFlow` / `restoreVNOptions` / `clearVNOptions` и в авто-генерации (`index.js`) не даёт генератору работать в отключённом состоянии. ([constants.js], [actions.js], [generator.js], [settings.js], [hud.js], [index.js])
+  - Новая кнопка тулбара **🎬 Генератор** — переключает `disableGenerator`, синхронизируется через `updateGeneratorToolbarButton()` (вызывается также из `updateHudVisibility()`). ([hud.js])
+  - Новый inline-тумблер у поля ввода — `#bb-vn-btn-toggle-generator`; в отключённом состоянии разворачивается в подписанную кнопку «Генератор выключен», давая очевидную точку повторного включения прямо на месте основной кнопки. ([actions.js], [style.css])
+  - Новый pill в настройках — «Отключить генератор действий» с change-хендлером и восстановлением сохранённых вариантов при включении. ([settings.js])
+  - Новая настройка `disableGenerator` (по умолчанию `false`) в `DEFAULT_SETTINGS`. ([constants.js])
+
+- **Плавающее позиционирование popup-оверлеев тулбара** — overlay больше не fullscreen-бэкдроп. Теперь это прозрачный `position: fixed` контейнер, который JS позиционирует под кнопкой, открывшей его (`positionToolbarPopup(btn)`), с clamping во viewport и auto-flip над кнопкой при нехватке места снизу. ([hud.js], [style.css])
+  - Overlay перенесён из шаблона HUD в корневой stacking context (`<body>`) — больше не клиппится под topbar SillyTavern (z-index 3005) и не наследует `display:none` от свёрнутого inline-drawer ST. ([hud.js])
+  - `z-index` overlay поднят с `895` до `100000`. ([style.css])
+  - Авто-перепозиционирование при `resize` и `scroll` (capture phase), а также при изменении размеров содержимого popup через `ResizeObserver` — popup остаётся привязан к кнопке и не «уплывает» в устаревший угол при раскрытии inline-drawer внутри. ([hud.js])
+  - Закрытие по клику вне popup переведено с backdrop-клика на `document`-listener (`click.bbToolbarPopup`) — overlay стал `pointer-events: none`, поэтому клик «по фону» ловится на уровне документа. ([hud.js])
+
+### Changed
+
+- **JSON-схема больше не отправляется в основной API** — `getVnOptionsJsonSchema()` (strict `{"options":[...]}`) прикрепляется только для Custom API. Для основного API SillyTavern `jsonSchema` убран: пост-процессор ST больше не подменяет валидный bare-array ответ модели на пустой `{}` на Anthropic-via-ST, локальных моделях (llama.cpp / Ollama), Gemini и reverse-proxy. Существующий пайплайн `parseModelJson` + `extractBalancedSegment` + `repairJsonCandidate` разбирает любой формат. ([generator.js])
+- **`repairOptionsJson` переключён на `responseFormat: 'text'`** — раньше `responseFormat: 'json'` + `jsonSchema` противоречили друг другу (промпт просил bare array, схема описывала object). Теперь модель возвращает bare array без вмешательства, а `parseModelJson` достаёт его через `extractBalancedSegment`. ([generator.js])
+- **CSS popup-оверлея** — убран fullscreen-бэкдроп (`rgba(0,0,0,0.5)` + `backdrop-filter: blur(4px)` + `padding: 40px 14px`), overlay стал прозрачным `pointer-events: none` контейнером; popup получил flex-layout с `width: min(420px, calc(100vw - 16px))` и `max-height: min(70vh, 560px)`, тело — `flex: 1 1 auto; min-height: 0; overflow-y: auto` вместо жёсткого `max-height: 60vh`. ([style.css])
+- **Принудительный `display: block` для settings shell** при открытии popup — ST прячет `inline-drawer-content` через `display:none` в свёрнутом состоянии; без форсирования перенесённые в popup элементы наследовали нулевые размеры, и popup оказывался невидимым на мобильных. ([hud.js])
+- **OpenAI native (gpt-4o / gpt-4.1 / o1)** — раньше работал через strict schema, теперь работает через `parseModelJson`; теряет strict-schema гарантию, но на практике `OPTIONS_PROMPT` + `parseModelJson` + `fillMissingOptions` + `dedupeOptions` + `diversifyOptionTones` уже покрывали все формы ответа. Видимых пользователю изменений нет. Custom API (Groq / OpenRouter / прямые OpenAI-прокси) — без изменений, схема и strict mode сохранены. ([generator.js])
+- **Версия** — `3.3.0` → `3.4.0`. ([manifest.json])
+
+### Fixed
+
+- **Пустой ответ основного API не уходит в ремонт** — новый гард `isEmptyRepairInput()` ловит `{}`, `[]` и markdown-fences вокруг них; ремонт пропускается, выбрасывается читаемая ошибка («Модель вернула пустой ответ…») вместо вызова модели на пустом `BROKEN INPUT:` и галлюцинации вариантов из истории чата. Тот же гард стоит на основном `result` перед парсингом. ([generator.js])
+- **Генерация вариантов на Anthropic-via-ST / локальных моделях / Gemini / reverse-proxy** — возвращала пустоту или фантомные варианты (`intent = "Новый ход"` / «Модель вернула поврежденный JSON»); исправлено удалением strict json_schema из основного API. Воспроизводилось идентично на немодифицированном оригинале, что подтверждает архитектурную природу бага. ([generator.js])
+- **Popup тулбара для мобильных юзеров** — центрированный модал заменён на floating-panel паттерн с привязкой к кнопке. ([hud.js], [style.css])
+- **Логирование полного сырого ответа** при ошибке парсинга JSON — раньше `logOptionsJsonFailure` сохранял ~260 символов вокруг позиции ошибки, чего не хватало для диагностики реальных сбоев на Anthropic / OpenAI прокси. Теперь в `console.warn` пишется `fullResult` целиком. ([generator.js])
+
+---
+
 ## [3.3.0] - 16 June 2026
 
 ### Added
