@@ -3762,15 +3762,19 @@ body.bb-hud-popup-active #bb-social-toast-container {
 
 /* ===== BB Toolbar Popup Overlay ===== */
 .bb-toolbar-popup-overlay {
-    display: none; position: fixed; inset: 0; z-index: 895;
-    background: rgba(0,0,0,0.5); backdrop-filter: blur(4px);
-    align-items: flex-start; justify-content: center; padding: 40px 14px;
-    overflow-y: auto;
+    display: none;
+    position: fixed;
+    z-index: 100000;
+    pointer-events: none;
 }
-.bb-toolbar-popup-overlay.open { display: flex; }
+.bb-toolbar-popup-overlay.open { display: block; }
 
 .bb-toolbar-popup {
-    width: 100%; max-width: 420px;
+    pointer-events: auto;
+    width: min(420px, calc(100vw - 16px));
+    max-height: min(70vh, 560px);
+    display: flex;
+    flex-direction: column;
     background: linear-gradient(180deg, rgba(18,22,35,0.98), rgba(10,14,22,0.98));
     border: 1px solid rgba(192,132,252,0.2); border-radius: 18px;
     box-shadow: 0 20px 40px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.06);
@@ -3793,7 +3797,7 @@ body.bb-hud-popup-active #bb-social-toast-container {
 
 .bb-toolbar-popup-body {
     padding: 14px 16px; display: flex; flex-direction: column; gap: 12px;
-    max-height: 60vh; overflow-y: auto;
+    flex: 1 1 auto; min-height: 0; overflow-y: auto;
 }
 .bb-toolbar-popup-body::-webkit-scrollbar { width: 4px; }
 .bb-toolbar-popup-body::-webkit-scrollbar-track { background: rgba(255,255,255,0.02); border-radius: 999px; }
