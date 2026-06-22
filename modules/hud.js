@@ -2314,9 +2314,19 @@ export function ensureHudContainer() {
             <div class="bb-hud-tabs"><div class="bb-hud-tab active" data-tab="chars"><i class="fa-solid fa-heart-pulse"></i><span>Связи</span></div><div class="bb-hud-tab" data-tab="log"><i class="fa-solid fa-terminal"></i><span>Система</span></div><div class="bb-hud-tab" data-tab="moments"><i class="fa-solid fa-book-open"></i><span>Дневник</span></div></div>
             <div class="bb-hud-content active" id="bb-hud-chars"></div><div class="bb-hud-content" id="bb-hud-log"></div><div class="bb-hud-content" id="bb-hud-moments"></div>
         </div>
-        <div class="bb-toolbar-popup-overlay" id="bb-toolbar-popup-overlay"></div>
     `;
     jQuery('body').append(hudHtml);
+
+    // Append the popup overlay as a direct child of <body>, separate from the
+    // HUD, so it lives in the root stacking context (not inside #bb-social-hud
+    // which is z-index 890 on desktop and would clip the popup under the ST
+    // top bar at z-index 3005).
+    if (!document.getElementById('bb-toolbar-popup-overlay')) {
+        const overlayEl = document.createElement('div');
+        overlayEl.className = 'bb-toolbar-popup-overlay';
+        overlayEl.id = 'bb-toolbar-popup-overlay';
+        document.body.appendChild(overlayEl);
+    }
 
     // Apply moment render classes from settings (antialiased, force-gpu)
     applyMomentRenderClasses();
@@ -2371,6 +2381,61 @@ export function ensureHudContainer() {
         savedPositions.delete(el);
     };
 
+    // Position the popup overlay under the toolbar button that opened it,
+    // then clamp into the viewport. Mirrors SillyTavern-Infoboard's
+    // PositionPopupNearButton() approach.
+    const positionToolbarPopup = (btn) => {
+        if (!btn || !overlay) return;
+        const btnRect = btn.getBoundingClientRect();
+        // If the button is off-screen (HUD closed on desktop: translateX(100%)
+        // pushes it past the right edge), bail out — there is nothing to
+        // anchor the popup to. The caller should open the HUD first.
+        if (btnRect.left > window.innerWidth - 4 || btnRect.right < 4 ||
+            btnRect.top > window.innerHeight - 4 || btnRect.bottom < 4) {
+            return;
+        }
+        // Reset any previous inline bottom so it doesn't fight with top.
+        overlay.style.bottom = 'auto';
+        // Initial position: directly below the button, left-aligned to it.
+        overlay.style.top = `${Math.max(8, btnRect.bottom + 4)}px`;
+        overlay.style.left = `${Math.max(8, btnRect.left)}px`;
+        // Clamp on the next frame, once the popup has been laid out and we
+        // know its real dimensions.
+        requestAnimationFrame(() => {
+            const rect = overlay.getBoundingClientRect();
+            const popupW = rect.width || 420;
+            const popupH = rect.height || 0;
+            // Horizontal clamp: always run, even with zero height, so the popup
+            // stays on screen horizontally.
+            if (rect.right > window.innerWidth - 8 || rect.width === 0) {
+                overlay.style.left = `${Math.max(8, window.innerWidth - popupW - 8)}px`;
+            }
+            if (parseFloat(overlay.style.left || '0') < 8) {
+                overlay.style.left = '8px';
+            }
+            // Vertical clamp — only when we have a real height.
+            if (popupH === 0) return;
+            const spaceBelow = window.innerHeight - btnRect.bottom - 8;
+            const spaceAbove = btnRect.top - 8;
+            if (rect.bottom > window.innerHeight - 8) {
+                if (spaceAbove >= popupH) {
+                    // Flip above the button
+                    overlay.style.top = 'auto';
+                    overlay.style.bottom = `${window.innerHeight - btnRect.top + 4}px`;
+                } else if (spaceAbove > spaceBelow) {
+                    overlay.style.top = '8px';
+                    overlay.style.bottom = 'auto';
+                } else {
+                    overlay.style.top = 'auto';
+                    overlay.style.bottom = '8px';
+                }
+            }
+        });
+    };
+
+    // Track the button that opened the popup so we can reposition on resize/scroll.
+    let activeToolbarBtn = null;
+
     const closeToolbarPopup = () => {
         if (!activeToolbarPopup) return;
         // Move DOM sections back to their original positions
@@ -2386,7 +2451,12 @@ export function ensureHudContainer() {
 
         overlay.classList.remove('open');
         overlay.innerHTML = '';
+        // Reset inline positioning so the next open starts clean.
+        overlay.style.top = '';
+        overlay.style.left = '';
+        overlay.style.bottom = '';
         activeToolbarPopup = null;
+        activeToolbarBtn = null;
         jQuery('.bb-toolbar-btn').removeClass('active');
         // Restore HUD/toolbar stacking priority (was lowered so the popup
         // could render above the HUD on mobile).
@@ -2397,10 +2467,11 @@ export function ensureHudContainer() {
     const hudEl = document.getElementById('bb-social-hud');
     if (hudEl) hudEl.closeToolbarPopup = closeToolbarPopup;
 
-    const openToolbarPopup = (type) => {
+    const openToolbarPopup = (type, btn) => {
         if (activeToolbarPopup === type) { closeToolbarPopup(); return; }
         closeToolbarPopup();
         activeToolbarPopup = type;
+        activeToolbarBtn = btn || null;
         // Lower HUD/backdrop/toast z-index so the popup overlay renders above
         // them — critical on mobile where #bb-social-hud.open is z-index 9999
         // and would otherwise sit on top of the popup (z-index 10000).
@@ -2408,6 +2479,12 @@ export function ensureHudContainer() {
 
         const settingsShell = document.querySelector('.bb-vn-settings-shell');
         if (!settingsShell) { notifyError('Панель настроек не найдена.'); return; }
+        // Force the settings shell visible while we move its children into the
+        // popup. ST hides this inline-drawer-content with display:none when the
+        // parent drawer is collapsed; without this, moved elements may inherit
+        // zero dimensions and the popup ends up invisible on mobile.
+        const prevShellDisplay = settingsShell.style.display;
+        settingsShell.style.display = 'block';
 
         let popupContent = '';
         switch (type) {
@@ -2527,6 +2604,9 @@ export function ensureHudContainer() {
         // Bind close button
         overlay.querySelector('.bb-toolbar-popup-close')?.addEventListener('click', closeToolbarPopup);
 
+        // Position the popup under the button that opened it.
+        if (btn) positionToolbarPopup(btn);
+
         // Mark active toolbar button
         jQuery(`.bb-toolbar-btn[data-toolbar="${type}"]`).addClass('active');
     };
@@ -2553,19 +2633,52 @@ export function ensureHudContainer() {
     };
 
     // Bind toolbar buttons
-    jQuery('.bb-toolbar-btn').on('click', function() {
+    jQuery('.bb-toolbar-btn').on('click', function(e) {
+        e.stopPropagation();
         const type = jQuery(this).attr('data-toolbar');
         if (type === 'gen-toggle') {
             toggleGeneratorFromToolbar();
             return;
         }
-        openToolbarPopup(type);
+        openToolbarPopup(type, this);
     });
 
-    // Close popup when clicking overlay backdrop (not the popup itself)
-    jQuery(overlay).on('click', function(e) {
-        if (e.target === overlay) closeToolbarPopup();
+    // Close popup when clicking outside it (the overlay is transparent and
+    // pointer-events:none, so we listen on document instead).
+    jQuery(document).on('click.bbToolbarPopup', function(e) {
+        if (!activeToolbarPopup) return;
+        // Click inside the popup -> keep open
+        if (overlay.contains(e.target)) return;
+        // Click on the toolbar button that opened the popup -> let the button's
+        // own handler toggle it (it calls e.stopPropagation, so this branch is
+        // a safety net).
+        if (activeToolbarBtn && activeToolbarBtn.contains(e.target)) return;
+        closeToolbarPopup();
     });
+
+    // Reposition the popup on resize/scroll so it stays under the button.
+    const repositionActivePopup = () => {
+        if (activeToolbarPopup && activeToolbarBtn) {
+            positionToolbarPopup(activeToolbarBtn);
+        }
+    };
+    jQuery(window).on('resize.bbToolbarPopup', repositionActivePopup);
+    document.addEventListener('scroll', repositionActivePopup, true); // capture phase; jQuery .on() cannot take a capture flag (3rd arg would // be treated as the handler and crash with 'guid' on boolean 'true')
+
+    // Watch the popup body for size changes (e.g. when an inline drawer is
+    // toggled inside the popup). When the popup grows or shrinks, recompute
+    // its position so it stays anchored to the button and clamped to the
+    // viewport instead of drifting to a stale corner.
+    if (typeof ResizeObserver !== 'undefined' && !overlay.__bbVnResizeObserver) {
+        overlay.__bbVnResizeObserver = new ResizeObserver(() => {
+            // Only react when a popup is actually open; ignore the initial
+            // layout pass that happens before .open is set.
+            if (activeToolbarPopup && activeToolbarBtn && overlay.classList.contains('open')) {
+                positionToolbarPopup(activeToolbarBtn);
+            }
+        });
+        overlay.__bbVnResizeObserver.observe(overlay);
+    }
 
     // --- Status dot toggle (enable/disable extension) ---
     jQuery(document).on('click', '.bb-hud-live-dot', function(e) {

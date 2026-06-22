@@ -86,6 +86,10 @@ function openVnPanel(container) {
     scopedContainer.removeClass('is-closing');
     scopedContainer.addClass('active is-opening');
 
+    // Hide the generator on/off toggle while the panel is open — it sits next
+    // to the main button and would overlap the expanded options panel.
+    jQuery('#bb-vn-btn-toggle-generator').hide();
+
     window.requestAnimationFrame(() => {
         scopedContainer.removeClass('is-opening');
     });
@@ -100,6 +104,8 @@ function closeVnPanel(container, onClosed = null) {
 
     if (!scopedContainer.hasClass('active')) {
         scopedContainer.removeClass('is-closing is-opening');
+        // Restore the toggle even if the panel wasn't active (defensive).
+        jQuery('#bb-vn-btn-toggle-generator').show();
         if (typeof onClosed === 'function') onClosed();
         return;
     }
@@ -110,6 +116,8 @@ function closeVnPanel(container, onClosed = null) {
     const timerId = window.setTimeout(() => {
         scopedContainer.removeData('bbVnCloseTimer');
         scopedContainer.removeClass('active is-closing is-opening');
+        // Restore the toggle now that the panel is closed.
+        jQuery('#bb-vn-btn-toggle-generator').show();
         if (typeof onClosed === 'function') onClosed();
     }, VN_PANEL_CLOSE_MS);
 
@@ -447,11 +455,19 @@ export function injectVNActionsUI() {
         ta.addEventListener('input', () => {
             if (isGeneratorDisabled()) return;
             const btn = document.getElementById('bb-vn-btn-generate');
+            const toggle = document.getElementById('bb-vn-btn-toggle-generator');
             const opts = document.getElementById('bb-vn-options-container');
-            if (ta.value.trim().length > 0) {
+            const hasText = ta.value.trim().length > 0;
+            // When the user is typing, hide both the generate button and the
+            // generator on/off toggle so they don't crowd the input area.
+            // When the textarea is empty (and the options panel is closed),
+            // show them back.
+            if (hasText) {
                 if (btn) btn.style.display = 'none';
+                if (toggle) toggle.style.display = 'none';
             } else if (opts && !opts.classList.contains('active')) {
                 if (btn) btn.style.display = 'block';
+                if (toggle) toggle.style.display = '';
             }
         });
     }
