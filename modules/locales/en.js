@@ -1,5 +1,6 @@
 // Static extension UI text only. Never apply this catalogue to stored story data.
 export const EN = {
+    "Использовать контекст карты": "Use map context",
     "Скрытые": "Hidden",
     "Скрытые персонажи": "Hidden characters",
     "Вернуть": "Restore",

@@ -293,6 +293,7 @@ export function setupExtensionSettings() {
                             <label for="bb-vn-cfg-output-language">Язык новых ответов</label>
                             <select id="bb-vn-cfg-output-language" class="text_pole"><option value="chat">Как в чате</option><option value="ru">Русский</option><option value="en">English</option></select>
                             <span class="bb-vn-settings-note">Для новых вариантов, профилей, черт и записей об отношениях. Сохранённые данные не переводятся.</span>
+                            <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-map-context" ${s.useMapContext ? 'checked' : ''}><span>Использовать контекст карты</span></label>
                             <label for="bb-vn-cfg-context-messages">Сообщений в контексте вариантов</label>
                             <input type="number" id="bb-vn-cfg-context-messages" class="text_pole" min="1" max="100" step="1" value="${normalizeVnContextMessages(s.vnContextMessages)}">
                             <span class="bb-vn-settings-note">Последние 1–100 сообщений, по умолчанию 10. Последний ответ остаётся ориентиром сцены. Это объём истории для вариантов, а не лимит токенов ответа; основное подключение может добавлять контекст SillyTavern.</span>
@@ -469,6 +470,10 @@ export function setupExtensionSettings() {
     }
     jQuery('#bb-vn-cfg-options-enabled').on('change', function() {
         setVnOptionsEnabled(this.checked);
+    });
+    jQuery('#bb-vn-cfg-map-context').on('change', function() {
+        extension_settings[MODULE_NAME].useMapContext = this.checked;
+        saveSettingsDebounced();
     });
     jQuery('#bb-vn-cfg-context-messages').on('change', function() {
         const value = normalizeVnContextMessages(jQuery(this).val());

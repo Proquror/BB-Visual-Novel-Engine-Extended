@@ -33,6 +33,7 @@ export const DEFAULT_SETTINGS = {
     disableRelationshipTracker: false,
     vnReplyLength: 'medium',
     vnUserInstructions: '',
+    useMapContext: false,
     vnContextMessages: 10,
     friendshipImpactValues: { ...DEFAULT_IMPACT_VALUES },
     romanceImpactValues: { ...DEFAULT_IMPACT_VALUES },

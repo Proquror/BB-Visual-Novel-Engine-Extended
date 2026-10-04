@@ -1,3 +1,4 @@
+import { getOptionalMapContext } from './map-context.js';
 import { DEFAULT_DESCRIPTION_PROMPT, resolveDescriptionPrompt } from './description-prompt.js';
 import { syncOptionsVisibility } from './options-visibility.js';
 import { t, ui } from './i18n.js';
@@ -1279,6 +1280,7 @@ export async function bbVnGenerateOptionsFlow(request = []) {
             .replace('{{lastMessage}}', lastMessageText);
 
         prompt = context.substituteParams(prompt);
+        prompt += getOptionalMapContext(activeVnOptionsOperation.settings.useMapContext);
         prompt += `\n\n[ACTIVE LENGTH DIRECTIVE]\n${buildOptionLengthDirective(replyLength)}`;
         prompt += '\n\n[STRUCTURED OUTPUT COMPATIBILITY]\nReturn {"options":[...]} with exactly 3 option objects and no extra fields.';
 

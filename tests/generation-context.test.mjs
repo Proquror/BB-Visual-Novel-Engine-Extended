@@ -152,7 +152,7 @@ async function harness({ custom = false, boot = false, fakeClock = false } = {})
     }
     const state = cache.get('./state.js').namespace;
     return {
-        document: sandbox.document, window: sandbox.window, api: generator.namespace, state, context, calls, rendered, errors, settings, events, logs, profileState, createNode,
+        sandbox, document: sandbox.document, window: sandbox.window, api: generator.namespace, state, context, calls, rendered, errors, settings, events, logs, profileState, createNode,
         connections: cache.get('./connections.js').namespace,
         async loadApi(name) {
             const module = await load(name);
@@ -1500,3 +1500,26 @@ test('portrait offers completion when model claims sufficient appearance without
         assert.equal((await run).needsAppearanceDetails,true);
     }
 });
+
+for (const custom of [false, true]) {
+    test('map context switch reaches the actual ' + (custom ? 'custom' : 'main') + ' options prompt', async () => {
+        const h = await harness({ custom });
+        let currentMap = 'MAP_ONLY_HALL';
+        h.sandbox.BBInteractiveMap = { apiVersion: 1, getContext: () => currentMap };
+        const prompt = call => custom ? call.body.messages.map(m => m.content).join('\n') : call.args.quietPrompt;
+        let run = h.api.bbVnGenerateOptionsFlow();
+        assert.ok(!prompt(h.calls[0]).includes('MAP_ONLY_HALL'));
+        h.respond(0); await run;
+        h.settings['BB-Visual-Novel'].useMapContext = true;
+        run = h.api.bbVnGenerateOptionsFlow();
+        assert.ok(prompt(h.calls[1]).includes('MAP_ONLY_HALL'));
+        h.respond(1); await run;
+        currentMap = 'MAP_ONLY_GARDEN';
+        h.context.chatId = 'chat-b';
+        run = h.api.bbVnGenerateOptionsFlow();
+        assert.ok(prompt(h.calls[2]).includes('MAP_ONLY_GARDEN'));
+        assert.ok(!prompt(h.calls[2]).includes('MAP_ONLY_HALL'));
+        h.respond(2); await run;
+        assert.deepEqual(h.errors, []);
+    });
+}
