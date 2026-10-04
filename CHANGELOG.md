@@ -4,6 +4,11 @@
 
 ## Русский
 
+### Интеграция Interactive Map 2.0 — 4 октября 2026 (без изменения версии)
+
+- Добавлен переключатель «Использовать контекст карты» для генерации вариантов VN-ответа. По умолчанию выключен.
+- Контекст берётся из сохранённой карты активного чата при каждом запросе; без карты или при выключенной настройке генерация работает как обычно.
+
 ### Микрообновление — 30 сентября 2026 (без изменения версии)
 
 - VNE не запускает автоматическое сохранение до загрузки сообщений и идентификатора целого чата. Это защищает существующий файл от перезаписи пустым состоянием при запуске.
@@ -71,6 +76,11 @@
 Источник: [78557dc](https://github.com/maxkara14/BB-Visual-Novel-Engine/commit/78557dc), включая версию в manifest. Более ранняя история здесь не реконструирована.
 
 ## English
+
+### Interactive Map 2.0 integration — October 4, 2026 (no version change)
+
+- Added an optional “Use map context” switch for VN response-option generation. Off by default.
+- Each request resolves the active chat’s saved map; without a map or with the setting disabled, generation works normally.
 
 ### Minor update — September 30, 2026 (no version change)
 

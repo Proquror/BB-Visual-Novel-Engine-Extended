@@ -120,6 +120,10 @@ A new branch receives relationship state at the selected message. Later imports 
 
 The portrait gallery is stored separately: moving it requires chat metadata and SillyTavern image files. Removing a gallery entry does not delete its disk file.
 
+## 🗺️ Map context
+
+Enable **Use map context** in settings to include the current chat’s saved map when generating VN response options. It is off by default; without a map, generation works normally. Requires [BB Interactive Map 2.0](https://github.com/maxkara14/BB-Interactive-Map).
+
 ## 🔗 Author
 
 [BruniikBron: Lo-Fi & Mods](https://bblofi.online/) · [Telegram](https://t.me/Brun11kBr0n)
