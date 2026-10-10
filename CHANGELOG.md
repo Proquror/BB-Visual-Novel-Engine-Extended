@@ -4,6 +4,12 @@
 
 ## Русский
 
+### Изоляция карточек персонажей — 10 октября 2026 (без изменения версии)
+
+- При генерации описаний и портретов карточки подбираются только среди текущего бота или участников текущей группы. Посторонняя карточка с совпадающим именем больше не подмешивает биографию и внешность из другой истории или AU.
+- При совпадении имён приоритет получает активный персонаж. Неоднозначное совпадение между участниками группы без активного совпадения не используется; остальные источники текущей сцены сохраняются.
+- Ранее сохранённые описания и портреты автоматически не изменяются. Если в них уже попали чужие сведения, их нужно исправить или перегенерировать.
+
 ### Параметры портретов — 10 октября 2026 (без изменения версии)
 
 - В подключение изображений перенесены режимы параметров из Comic Forge: OpenAI-compatible, GPT Image 1 / 1.5 / Mini, GPT Image 2, GPT Image 2.5 и Grok. Старые подключения и профили используют совместимый режим; установка Comic Forge не требуется.
@@ -84,6 +90,12 @@
 Источник: [78557dc](https://github.com/maxkara14/BB-Visual-Novel-Engine/commit/78557dc), включая версию в manifest. Более ранняя история здесь не реконструирована.
 
 ## English
+
+### Character card isolation — October 10, 2026 (no version change)
+
+- Profile and portrait generation only matches cards belonging to the current character or current group members. Unrelated same-name cards can no longer inject biographies or appearance from another story or AU.
+- The active character takes priority when names overlap. Ambiguous group matches without an active match are omitted while other current-scene sources remain available.
+- Existing saved profiles and portraits are unchanged. Edit or regenerate them if unrelated details were already included.
 
 ### Portrait parameters — October 10, 2026 (no version change)
 

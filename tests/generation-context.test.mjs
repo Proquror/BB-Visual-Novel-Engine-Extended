@@ -933,6 +933,73 @@ test('portrait prompt uses unsaved appearance, matching card and English without
     assert.equal(h.settings['BB-Visual-Novel'].outputLanguage, 'ru');
 });
 
+for (const kind of ['portrait', 'description']) {
+    test(`${kind} excludes a same-name AU card outside the current chat`, async () => {
+        const h = await harness();
+        h.context.characters = [{ name: 'Alex', avatar: 'au.png' }, { name: 'Narrator', avatar: 'story.png' }];
+        const reads = [];
+        h.context.getCharacterCardFields = ({ chid }) => {
+            reads.push(chid);
+            return { description: chid === 0 ? 'UNRELATED_AU_DOCTOR' : 'CURRENT_STORY_WORLD' };
+        };
+        h.context.getWorldInfoPrompt = async (_chat, _max, _dry, fields) => {
+            assert.equal(fields.characterDescription, '');
+            return { worldInfoString: 'CURRENT_CHAT_LORE' };
+        };
+        h.settings['BB-Visual-Novel'].characterDescriptionPrompt = 'Describe the character briefly.';
+        const run = kind === 'portrait'
+            ? h.api.generatePortraitPrompt({ charName: 'Alex', currentDescription: 'Red hair' })
+            : h.api.generateCharacterDescription({ charName: 'Alex', currentDescription: 'Red hair', stats: {} });
+        await h.waitForCalls(1);
+        const prompt = h.calls[0].args.quietPrompt;
+        assert.doesNotMatch(prompt, /UNRELATED_AU_DOCTOR|Matched character card: Alex/);
+        assert.match(prompt, /CURRENT_CHAT_LORE/);
+        assert.ok(!reads.includes(0));
+        h.respond(0, 'Red-haired character from the current story.');
+        await run;
+    });
+}
+
+test('portrait prioritizes the active card over an earlier same-name AU', async () => {
+    const h = await harness();
+    h.context.characters = [{ name: 'Alex' }, { name: 'Alex' }];
+    h.context.getCharacterCardFields = ({ chid }) => ({ description: chid === 1 ? 'CURRENT_GREEN_EYES' : 'UNRELATED_AU' });
+    const run = h.api.generatePortraitPrompt({ charName: 'Alex' });
+    await h.waitForCalls(1);
+    assert.match(h.calls[0].args.quietPrompt, /CURRENT_GREEN_EYES/);
+    assert.doesNotMatch(h.calls[0].args.quietPrompt, /UNRELATED_AU/);
+    h.respond(0, 'Green-eyed character.');
+    await run;
+});
+
+test('portrait resolves group members by avatar and excludes outsiders with the same name', async () => {
+    const h = await harness();
+    h.context.groupId = '42';
+    h.context.groups = [{ id: 42, members: ['alex.png', 'narrator.png'] }];
+    h.context.characters = [{ name: 'Alex', avatar: 'au.png' }, { name: 'Narrator', avatar: 'narrator.png' }, { name: 'Alex', avatar: 'alex.png' }];
+    h.context.getCharacterCardFields = ({ chid }) => ({ description: ['UNRELATED_AU', 'STORY_SETTING', 'GROUP_MEMBER_GREEN_EYES'][chid] });
+    const run = h.api.generatePortraitPrompt({ charName: 'Alex' });
+    await h.waitForCalls(1);
+    assert.match(h.calls[0].args.quietPrompt, /GROUP_MEMBER_GREEN_EYES/);
+    assert.doesNotMatch(h.calls[0].args.quietPrompt, /UNRELATED_AU/);
+    h.respond(0, 'Green-eyed group member.');
+    await run;
+});
+
+test('missing group or ambiguous group names do not fall back to library-wide lookup', async () => {
+    for (const groups of [[], [{ id: 'group-a', members: ['one.png', 'two.png'] }]]) {
+        const h = await harness();
+        h.context.groupId = 'group-a'; h.context.groups = groups; h.context.characterId = null;
+        h.context.characters = [{ name: 'Alex', avatar: 'one.png' }, { name: 'Alex', avatar: 'two.png' }];
+        h.context.getCharacterCardFields = () => { throw Error('Ambiguous card must not be read'); };
+        const run = h.api.generatePortraitPrompt({ charName: 'Alex' });
+        await h.waitForCalls(1);
+        assert.match(h.calls[0].args.quietPrompt, /Matching card: ""/);
+        h.respond(0, 'Character from current scene.');
+        await run;
+    }
+});
+
 test('portrait prompt does not borrow the active unrelated card', async () => {
     const h = await harness();
     h.context.characters = [{ name: 'Other' }];

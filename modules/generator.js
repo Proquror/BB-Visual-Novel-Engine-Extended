@@ -782,15 +782,24 @@ function findMatchingContextCharacter(context, charName = '') {
     const target = normalizeCharacterNameForMatch(charName);
     if (!target || !Array.isArray(context?.characters)) return null;
 
-    for (let index = 0; index < context.characters.length; index++) {
-        const character = context.characters[index];
-        if (!character) continue;
-        if (normalizeCharacterNameForMatch(character.name) === target) {
-            return { character, chid: index };
-        }
+    // Same-name cards outside this chat may describe an entirely different AU.
+    const activeId = context.characterId == null || context.characterId === ''
+        ? -1 : Number(context.characterId);
+    let candidates;
+    if (context.groupId != null && context.groupId !== '') {
+        const group = context.groups?.find(item => String(item.id) === String(context.groupId));
+        if (!Array.isArray(group?.members)) return null;
+        const members = new Set(group.members);
+        candidates = context.characters
+            .map((character, chid) => ({ character, chid }))
+            .filter(item => item.character && members.has(item.character.avatar));
+    } else {
+        const character = Number.isInteger(activeId) ? context.characters[activeId] : null;
+        candidates = character ? [{ character, chid: activeId }] : [];
     }
 
-    return null;
+    const matches = candidates.filter(item => normalizeCharacterNameForMatch(item.character.name) === target);
+    return matches.find(item => item.chid === activeId) || (matches.length === 1 ? matches[0] : null);
 }
 
 async function collectCharacterDescriptionSourceContext({ charName = '', userName = '', personaText = '', portrait = false } = {}) {
