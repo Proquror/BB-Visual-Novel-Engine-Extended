@@ -4,6 +4,14 @@
 
 ## Русский
 
+### Параметры портретов — 10 октября 2026 (без изменения версии)
+
+- В подключение изображений перенесены режимы параметров из Comic Forge: OpenAI-compatible, GPT Image 1 / 1.5 / Mini, GPT Image 2, GPT Image 2.5 и Grok. Старые подключения и профили используют совместимый режим; установка Comic Forge не требуется.
+- Добавлены разрешение, пропорции (по умолчанию 1:1), качество и необязательный точный размер GPT. `xhigh` / `max` доступны в режиме GPT Image 2.5; Grok предлагает 1K / 2K и собственный набор качества. Новые параметры сохраняются в профилях.
+- GPT отправляет референсы файлами, Grok — JSON через `/images/edits`, с сохранением внешности/стиля и лимита четырёх изображений. Точная ошибка прокси `images[].image_url is required` допускает один повтор в формате `image_url` с теми же референсами; другие ошибки не вызывают этот повтор.
+- Исправлена компоновка настроек: режим и точный размер занимают всю ширину, связанные поля выровнены парами, на узкой панели используется одна колонка. Длинная справка свёрнута отдельно.
+- Добавлены проверки параметров, референсов, совместимости профилей и видимых ошибок. Доступность параметров зависит от прокси.
+
 ### Интеграция Interactive Map 2.0 — 4 октября 2026 (без изменения версии)
 
 - Добавлен переключатель «Использовать контекст карты» для генерации вариантов VN-ответа. По умолчанию выключен.
@@ -76,6 +84,14 @@
 Источник: [78557dc](https://github.com/maxkara14/BB-Visual-Novel-Engine/commit/78557dc), включая версию в manifest. Более ранняя история здесь не реконструирована.
 
 ## English
+
+### Portrait parameters — October 10, 2026 (no version change)
+
+- Ported Comic Forge image parameter modes: OpenAI-compatible, GPT Image 1 / 1.5 / Mini, GPT Image 2, GPT Image 2.5 and Grok. Existing connections and profiles use compatible behavior; Comic Forge installation is not required.
+- Added resolution, aspect ratio (square by default), quality and optional exact GPT dimensions. Only the GPT Image 2.5 mode offers `xhigh` / `max`; Grok offers 1K / 2K and its own quality choices. Profiles retain the new parameters.
+- GPT sends references as files, Grok as JSON `/images/edits`, preserving appearance/style instructions and the four-image limit. Only the explicit `images[].image_url is required` proxy rejection allows one `image_url` retry with the original references.
+- Improved settings layout: full-width mode and exact size, aligned parameter pairs, one column on narrow panels and separately collapsible help.
+- Added coverage for parameters, references, profile compatibility and visible errors. Actual parameter availability depends on the proxy.
 
 ### Interactive Map 2.0 integration — October 4, 2026 (no version change)
 

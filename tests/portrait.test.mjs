@@ -86,6 +86,134 @@ async function harness({ fetch: fetchImpl, fakeClock = false, uploadFails = fals
     };
 }
 
+test('portrait model modes map size, ratio and quality without leaking into compatible requests', async () => {
+    const h = await harness();
+    const payload = options => JSON.parse(h.api.buildPortraitRequest({ ...connection, ...options }, 'Alex').init.body);
+    const legacy = payload({ imageSize: '2K', aspect: '3:4', customSize: '2560x1440' });
+    assert.equal(legacy.size, '1024x1024');
+    for (const key of ['quality', 'resolution', 'aspect_ratio', 'response_format']) assert.equal(legacy[key], undefined);
+    const gpt = payload({ parameterMode: 'gpt-image-2.5', imageSize: '2K', aspect: '3:4', quality: 'max' });
+    assert.equal(gpt.size, '1536x2048');
+    assert.equal(gpt.quality, 'max');
+    assert.equal(gpt.resolution, undefined);
+    const exact = payload({ parameterMode: 'gpt-image-2.5', customSize: '2560x1440', imageSize: '4K', quality: 'xhigh' });
+    assert.equal(exact.size, '2560x1440');
+    assert.equal(exact.quality, 'xhigh');
+    const grok = payload({ parameterMode: 'grok', imageSize: '2K', aspect: '3:4', quality: 'medium' });
+    assert.equal(grok.resolution, '2k');
+    assert.equal(grok.aspect_ratio, '3:4');
+    assert.equal(grok.quality, 'medium');
+    assert.equal(grok.size, undefined);
+    for (const options of [
+        { parameterMode: 'gpt-image-2', quality: 'max' },
+        { parameterMode: 'gpt-image', size: '1792x1024' },
+        { parameterMode: 'gpt-image-2.5', customSize: '1025x1024' },
+        { parameterMode: 'gpt-image-2.5', imageSize: '4K' },
+        { parameterMode: 'grok', imageSize: '4K' },
+        { parameterMode: 'grok', aspect: '4:5' },
+        { parameterMode: 'grok', quality: 'high' },
+    ]) await assert.rejects(h.api.generatePortrait({ ...connection, ...options }, 'Alex', []), /portrait_parameters/);
+    assert.equal(h.requests.length, 0);
+});
+
+test('GPT edits retain options and every file; Grok edits retain every JSON reference and its role', async () => {
+    const h = await harness();
+    const refs = Array.from({ length: 4 }, (_, i) => ({ dataUrl: png, role: i === 3 ? 'style' : 'appearance' }));
+    const gpt = h.api.buildPortraitRequest({ ...connection, parameterMode: 'gpt-image-2.5', quality: 'xhigh', imageSize: '2K', aspect: '3:4' }, 'Alex', refs);
+    assert.equal(gpt.init.body.get('size'), '1536x2048');
+    assert.equal(gpt.init.body.get('quality'), 'xhigh');
+    assert.equal(gpt.init.body.getAll('image[]').length, 4);
+    for (const count of [1, 4]) {
+        const request = h.api.buildPortraitRequest({ ...connection, parameterMode: 'grok', imageSize: '2K' }, 'Alex', refs.slice(0, count));
+        assert.match(request.url, /images\/edits$/);
+        assert.equal(request.init.headers['Content-Type'], 'application/json');
+        const body = JSON.parse(request.init.body);
+        const images = body.images || [body.image];
+        assert.equal(images.length, count);
+        assert.ok(images.every(image => image.url === png && image.type === 'image_url'));
+        assert.equal(body.resolution, '2k');
+        if (count === 4) assert.match(body.prompt, /Reference 4: use artistic style only/);
+    }
+    assert.equal(h.api.extractPortraitImage({ data: [{ b64_json: '/9j/AAAA' }] }), 'data:image/jpeg;base64,/9j/AAAA');
+});
+
+test('Grok retries only explicit image_url schema rejection once, preserving refs and parameters', async () => {
+    const options = { ...connection, parameterMode: 'grok', imageSize: '2K', aspect: '3:4', quality: 'medium' };
+    const refs = [{ dataUrl: png, role: 'style' }, { dataUrl: png }];
+    const rejected = { ok: false, status: 400, json: async () => ({ error: { message: 'images[].image_url is required' } }) };
+    let calls = 0;
+    const h = await harness({ fetch: async () => ++calls === 1 ? rejected : { ok: true, json: async () => ({ data_url: png }) } });
+    assert.equal(await h.api.generatePortrait(options, 'Alex', refs), png);
+    assert.equal(h.requests.length, 2);
+    const first = JSON.parse(h.requests[0].init.body), second = JSON.parse(h.requests[1].init.body);
+    assert.deepEqual(second.images, refs.map(ref => ({ image_url: ref.dataUrl })));
+    for (const key of ['prompt','model','resolution','aspect_ratio','quality']) assert.equal(second[key], first[key]);
+    for (const response of [rejected, { ok: false, status: 502 }, { ok: false, status: 400, json: async () => ({ error: { message: 'other error' } }) }]) {
+        const failed = await harness({ fetch: async () => response });
+        await assert.rejects(failed.api.generatePortrait(options, 'Alex', refs));
+        assert.equal(failed.requests.length, response === rejected ? 2 : 1);
+        assert.ok(failed.requests.every(request => request.url.endsWith('/images/edits')));
+    }
+    const controller = new AbortController();
+    const cancelled = await harness({ fetch: async () => ({ ...rejected, json: async () => { controller.abort(); return { error: { message: 'images[].image_url is required' } }; } }) });
+    await assert.rejects(cancelled.api.generatePortrait(options, 'Alex', refs, controller.signal), error => error.code === 'cancelled');
+    assert.equal(cancelled.requests.length, 1);
+});
+
+test('portrait parameter controls and saved profiles follow their explicit model mode', async () => {
+    const h = await harness(); h.mountSettings();
+    const input = key => h.nodes().find(n => n.dataset.portraitField === key);
+    const set = (key, value) => { input(key).value = value; input(key).emit('change'); };
+    const profile = h.nodes().find(n => n.tagName === 'select' && n.parentElement.children[0]?.textContent === 'Сохранённое подключение');
+    set('parameterMode', 'gpt-image-2.5');
+    assert.equal(input('size').parentElement.hidden, true);
+    assert.equal(input('aspect').value, '1:1');
+    assert.equal(input('customSize').parentElement.hidden, false);
+    assert.ok(input('quality').children.some(option => option.value === 'max'));
+    set('quality', 'max'); set('imageSize', '2K'); set('aspect', '3:4'); set('customSize', '1536x2048');
+    h.dialogs.name = 'GPT'; h.button('Сохранить как новый…').click();
+    const gptId = h.settings['BB-Visual-Novel'].portrait.activeProfile;
+    set('parameterMode', 'grok');
+    assert.equal(input('customSize').parentElement.hidden, true);
+    assert.equal(input('quality').value, '');
+    assert.ok(!input('quality').children.some(option => ['max','xhigh','high'].includes(option.value)));
+    assert.ok(!input('imageSize').children.some(option => option.value === '4K'));
+    set('quality', 'medium');
+    h.dialogs.name = 'Grok'; h.button('Сохранить как новый…').click();
+    const grokId = h.settings['BB-Visual-Novel'].portrait.activeProfile;
+    profile.value = gptId; profile.emit('change');
+    assert.equal(input('parameterMode').value, 'gpt-image-2.5');
+    assert.equal(input('quality').value, 'max');
+    assert.equal(input('customSize').value, '1536x2048');
+    profile.value = grokId; profile.emit('change');
+    assert.equal(input('parameterMode').value, 'grok');
+    assert.equal(input('quality').value, 'medium');
+    set('type', 'gemini');
+    assert.equal(input('parameterMode').parentElement.hidden, true);
+    assert.equal(input('imageSize').parentElement.hidden, false);
+    assert.equal(input('quality').parentElement.hidden, true);
+    h.settings['BB-Visual-Novel'].portrait.profiles.push({ id: 'legacy', label: 'Legacy', ...connection, type: 'openai-images', size: '1024x1536', quality: 'hd' });
+    profile.value = 'legacy'; profile.emit('change');
+    assert.equal(input('parameterMode').value, 'compatible');
+    assert.equal(input('size').value, '1024x1536');
+    assert.equal(input('quality').value, 'hd');
+    assert.equal(input('customSize').value, '');
+    assert.equal(input('imageSize').parentElement.hidden, true);
+});
+
+test('invalid portrait parameters produce a visible configuration error without changing the avatar', async () => {
+    const h = await harness();
+    Object.assign(h.settings['BB-Visual-Novel'].portrait, { parameterMode: 'gpt-image-2.5', customSize: '1025x1024' });
+    h.open();
+    try {
+        h.prompt().value = 'Alex';
+        await h.button('Сгенерировать портрет').click();
+        assert.equal(h.requests.length, 0);
+        assert.equal(h.applied.length, 0);
+        assert.ok(h.nodes().some(node => node.textContent?.startsWith('Проверьте качество, разрешение и пропорции')));
+    } finally { h.close(); }
+});
+
 test('image transports carry prompt, style and actual references', async () => {
     const h = await harness();
     const refs = [{ dataUrl: png, role: 'appearance' }, { dataUrl: png, role: 'style' }];
@@ -343,6 +471,10 @@ test('image settings persist separately and show only relevant provider fields',
     const input=key=>h.nodes().find(n=>n.dataset.portraitField===key);
     assert.equal(input('model').parentElement.parentElement.className, 'bb-portrait-connection');
     assert.equal(input('quality').parentElement.parentElement.className, 'bb-portrait-parameters');
+    assert.match(input('parameterMode').parentElement.className, /bb-portrait-field-wide/);
+    assert.equal(input('parameterMode').parentElement.children.length, 2);
+    assert.match(input('timeout').parentElement.className, /bb-portrait-field-wide/);
+    assert.ok(h.nodes().some(n => n.className === 'bb-portrait-parameter-help' && !n.open));
     assert.equal(input('timeout').parentElement.parentElement.parentElement.tagName, 'details');
     assert.ok(!input('timeout').parentElement.parentElement.parentElement.open);
     assert.equal(input('style').parentElement.parentElement.parentElement.tagName, 'details');

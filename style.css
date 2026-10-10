@@ -3156,7 +3156,17 @@ body.bb-social-chat-visible:not(.bb-social-chat-leaving) #bb-social-hud-toggle.b
 #bb-vn-portrait-settings .bb-portrait-fold > summary::after { content: '›'; color: #84bfe1; font-size: 18px; line-height: 1; transform: rotate(0); transition: transform 160ms ease; }
 #bb-vn-portrait-settings .bb-portrait-fold[open] > summary::after { transform: rotate(90deg); }
 #bb-vn-portrait-settings .bb-portrait-fold-body { display: grid; gap: 10px; padding: 0 12px 12px; }
-#bb-vn-portrait-settings .bb-portrait-parameters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0 12px 12px; }
+#bb-vn-portrait-settings .bb-portrait-parameters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 10px; padding: 0 12px 12px; }
+#bb-vn-portrait-settings .bb-portrait-field { align-content: start; }
+#bb-vn-portrait-settings .bb-portrait-field-wide { grid-column: 1 / -1; }
+#bb-vn-portrait-settings .bb-portrait-field > small { margin: 0; font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
+#bb-vn-portrait-settings .bb-portrait-parameter-help { grid-column: 1 / -1; border-top: 1px solid #94a3b826; padding-top: 8px; }
+#bb-vn-portrait-settings .bb-portrait-parameter-help > summary { cursor: pointer; color: #9aafc6; font-size: 11px; }
+#bb-vn-portrait-settings .bb-portrait-parameter-help > small { display: block; margin-top: 6px; font-size: 11px; line-height: 1.5; }
+#bb-vn-portrait-settings { container-type: inline-size; }
+@container (max-width: 340px) {
+    #bb-vn-portrait-settings .bb-portrait-parameters { grid-template-columns: minmax(0, 1fr); }
+}
 #bb-vn-portrait-settings .bb-portrait-parameters > small { grid-column: 1 / -1; margin: 0; font-size: 11px; line-height: 1.5; }
 #bb-vn-portrait-settings .bb-portrait-connection-status { display: flex; align-items: baseline; gap: 6px; color: #a3b3c6; font-size: 11px; font-weight: 400; line-height: 1.5; margin: -3px 0 0; }
 #bb-vn-portrait-settings .bb-portrait-connection-status::before { content: ''; flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }

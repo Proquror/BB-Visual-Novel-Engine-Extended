@@ -16,9 +16,11 @@
 
 **Общий стиль** сохраняется для следующих портретов. Настройка языка игровых ответов на английскую сборку промпта не влияет; ручной текст отправляется в написанном вами виде.
 
+**Параметры изображения.** В OpenAI Images выберите режим вручную: обычный OpenAI-compatible, GPT Image 1 / 1.5 / Mini, GPT Image 2, GPT Image 2.5 или Grok. Старые подключения и профили остаются в совместимом режиме. GPT Image 2 / 2.5 получают размер по разрешению 1K / 2K / 4K и пропорциям (по умолчанию 1:1); необязательный точный размер заменяет оба выбора. Длинная сторона пресетов — 1024 / 2048 / 3840 px; минимальная площадь может увеличить размер 1K. Точный размер: стороны кратны 16, до 3840 px, от 655360 до 8294400 пикселей, пропорции до 3:1. Например, квадратный 4K не помещается в лимит площади. `xhigh` и `max` доступны только в режиме GPT Image 2.5. Grok получает `resolution` 1K / 2K, `aspect_ratio` и качество low / medium / auto; референсы отправляются JSON, для GPT — файлами multipart. При точной ошибке прокси `images[].image_url is required` выполняется один повтор с полем `image_url` и теми же референсами. При других ошибках автоматического повтора нет. Все параметры сохраняются в профиле; их фактическая поддержка зависит от прокси.
+
 | Протокол | Адрес | Референсы |
 | --- | --- | --- |
-| OpenAI Images | Базовый адрес, например `https://provider.example/v1` | `/images/edits`, multipart; без референсов — `/images/generations` |
+| OpenAI Images | Базовый адрес, например `https://provider.example/v1` | `/images/edits`, multipart для GPT / JSON для Grok; без референсов — `/images/generations` |
 | OpenAI Chat | Базовый адрес, например `https://provider.example/v1` | Картинки в сообщении `/chat/completions`; нужна модель, возвращающая изображения |
 | Gemini | Корень сервиса или адрес до `/v1beta`; допустим полный `:generateContent` | `inlineData`; официальный домен Google использует `x-goog-api-key`, прокси — Bearer |
 | Naistera | Корень сервиса или полный `/api/generate` | `reference_images` и назначения референсов |
@@ -38,6 +40,8 @@
 Оригиналы хранятся на сервере SillyTavern в папке изображений пользователя `images/bb_vne_portraits`, ссылки — в метаданных чата. Галерея не входит в снимок VNE. Для переноса истории нужны полный чат с метаданными и соответствующие файлы изображений; экспорт одного чата не содержит сами картинки. История не очищается автоматически; удаление записи не освобождает место на диске.
 
 ## English
+
+**Image parameters.** For OpenAI Images, select the mode manually: standard OpenAI-compatible, GPT Image 1 / 1.5 / Mini, GPT Image 2, GPT Image 2.5, or Grok. Existing connections and profiles default to compatible behavior. GPT Image 2 / 2.5 derive size from 1K / 2K / 4K and aspect ratio (square by default); optional exact dimensions override both. Presets target a longest side of 1024 / 2048 / 3840 px, with the minimum pixel area potentially increasing 1K sizes. Dimensions must be multiples of 16, up to 3840 px, 655360–8294400 total pixels, and an aspect ratio up to 3:1; square 4K exceeds the area limit. Only the GPT Image 2.5 mode offers `xhigh` and `max`. Grok sends `resolution` 1K / 2K, `aspect_ratio`, low / medium / auto quality and JSON references; GPT sends multipart files. Only the explicit proxy rejection `images[].image_url is required` triggers a single retry using `image_url` and all original references. Other errors are not retried automatically. Profiles retain these parameters; actual support depends on the proxy.
 
 Configure **VNE settings → Images**, then open a character editor and click **Portraits** beside the avatar controls, then select **Create**. Enter a manual portrait prompt or use **Build prompt**, which uses the regular VNE text connection and returns English. Manual image generation does not call the text model.
 

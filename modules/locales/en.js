@@ -1,5 +1,13 @@
 // Static extension UI text only. Never apply this catalogue to stored story data.
 export const EN = {
+    "О параметрах и референсах": "About parameters and references",
+    "Параметры модели": "Model parameters",
+    "Обычный OpenAI-compatible": "Standard OpenAI-compatible",
+    "Разрешение": "Resolution",
+    "Точный размер GPT (необязательно)": "Exact GPT size (optional)",
+    "Заменяет разрешение и пропорции. Стороны кратны 16, до 3840 px; от 655360 до 8294400 пикселей, пропорции до 3:1.": "Overrides resolution and aspect ratio. Sides must be multiples of 16, up to 3840 px; 655360–8294400 pixels, aspect ratio up to 3:1.",
+    "Для прокси выберите режим вручную. Доступность параметров зависит от сервиса.": "Select the mode manually for proxies. Parameter availability depends on the service.",
+    "Проверьте качество, разрешение и пропорции выбранного режима. Точный размер GPT: стороны кратны 16, до 3840 px; от 655360 до 8294400 пикселей, пропорции до 3:1.": "Check quality, resolution and aspect ratio for the selected mode. Exact GPT size: sides must be multiples of 16, up to 3840 px; 655360–8294400 pixels, aspect ratio up to 3:1.",
     "Использовать контекст карты": "Use map context",
     "Скрытые": "Hidden",
     "Скрытые персонажи": "Hidden characters",

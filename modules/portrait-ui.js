@@ -6,6 +6,7 @@ import { generatePortrait, fetchPortraitModels, PORTRAIT_DEFAULTS, readPortraitF
 import { generatePortraitPrompt } from './generator.js';
 import { getCurrentPersonaScopeKey } from './social.js';
 import { createPortraitGallery, downloadPortrait, copyPortrait } from './portrait-gallery.js';
+import { getImageParameterMode, getImageQualityOptions, GROK_ASPECT_RATIOS, IMAGE_ASPECT_RATIOS, normalizeImageParameterSettings } from './portrait-image-options.js';
 
 function settings() { return { ...PORTRAIT_DEFAULTS, ...extension_settings[MODULE_NAME].portrait }; }
 function node(tag, text = '', className = '') {
@@ -39,11 +40,14 @@ export function mountPortraitSettings(root) {
         ['type', 'Формат API', { choices: [['openai-images','OpenAI Images'],['openai-chat','OpenAI Chat'],['gemini','Gemini'],['naistera','Naistera']] }],
         ['endpoint', 'Адрес сервиса', { type: 'url' }], ['key','API-ключ',{type:'password'}],
         ['model','Модель',{choices:[]}], ['style','Общий стиль портретов',{rows:3,maxLength:2000}],
+        ['parameterMode','Параметры модели',{choices:[['compatible','Обычный OpenAI-compatible'],['gpt-image','GPT Image 1 / 1.5 / Mini'],['gpt-image-2','GPT Image 2'],['gpt-image-2.5','GPT Image 2.5 (Flare / Sunburst)'],['grok','Grok Imagine Image 2.0']]}],
         ['size','Размер',{choices:[['1024x1024','1024×1024'],['1024x1536','1024×1536'],['1536x1024','1536×1024'],['1024x1792','1024×1792'],['1792x1024','1792×1024']]}],
-        ['quality','Качество',{choices:[['','По умолчанию'],['standard','standard'],['hd','hd'],['low','low'],['medium','medium'],['high','high'],['auto','auto']]}],
+        ['imageSize','Разрешение',{choices:[['1K','1K'],['2K','2K'],['4K','4K']]}],
         ['aspect','Пропорции портрета',{choices:[['1:1','1:1'],['3:4','3:4'],['2:3','2:3'],['4:3','4:3']]}],
-        ['imageSize','Разрешение Gemini / Chat',{choices:[['1K','1K'],['2K','2K'],['4K','4K']]}],
-        ['preset','Пресет Naistera',{}], ['timeout','Ожидание, сек.',{type:'number'}],
+        ['quality','Качество',{choices:[['','По умолчанию'],['standard','standard'],['hd','hd'],['low','low'],['medium','medium'],['high','high'],['auto','auto']]}],
+        ['timeout','Ожидание, сек.',{type:'number'}],
+        ['customSize','Точный размер GPT (необязательно)',{maxLength:32}],
+        ['preset','Пресет Naistera',{}],
     ];
     const controls = new Map();
     let discovery = null, availableModels = [], manual;
@@ -109,7 +113,7 @@ export function mountPortraitSettings(root) {
     const profileBody = node('div', '', 'bb-portrait-fold-body'); profileBox.append(profileBody);
     const profiles = field(profileBody, 'Сохранённое подключение', '', { choices: [] });
     const profileName = field(profileBody, 'Имя профиля', '', { maxLength: 100 });
-    const profileFields = ['type','endpoint','key','model','size','quality','aspect','imageSize','preset','timeout'];
+    const profileFields = ['type','endpoint','key','model','parameterMode','customSize','size','quality','aspect','imageSize','preset','timeout'];
     const savedProfiles = () => Array.isArray(settings().profiles) ? settings().profiles : [];
     function renderProfiles() {
         profiles.replaceChildren();
@@ -155,16 +159,38 @@ export function mountPortraitSettings(root) {
     profileBody.append(profileActions);
     const sync = () => {
         const type = controls.get('type').value;
+        const current = settings();
+        if (type === 'openai-images') normalizeImageParameterSettings(current);
+        extension_settings[MODULE_NAME].portrait = current;
+        const mode = getImageParameterMode(current);
+        controls.get('parameterMode').value = mode;
+        const modern = type === 'openai-images' && ['gpt-image-2','gpt-image-2.5','grok'].includes(mode);
+        const choices = (key, values) => {
+            const input = controls.get(key);
+            input.replaceChildren();
+            for (const value of values) { const option = node('option', value || t('По умолчанию')); option.value = value; input.append(option); }
+            input.value = current[key];
+        };
+        choices('quality', getImageQualityOptions(current));
+        choices('size', (mode === 'gpt-image' ? ['1024x1024','1536x1024','1024x1536','auto'] : ['1024x1024','1024x1536','1536x1024','1024x1792','1792x1024','auto']));
+        choices('imageSize', type === 'openai-images' && mode === 'grok' ? ['1K','2K'] : ['1K','2K','4K']);
+        choices('aspect', modern ? (mode === 'grok' ? GROK_ASPECT_RATIOS : IMAGE_ASPECT_RATIOS.filter(ratio => { const [w,h] = ratio.split(':').map(Number); return Math.max(w,h) / Math.min(w,h) <= 3; })) : [...new Set(['1:1','3:4','2:3','4:3', current.aspect])]);
         controls.get('endpoint').placeholder = endpoints[type];
-        for (const key of ['size','quality']) controls.get(key).parentElement.hidden = type !== 'openai-images';
-        controls.get('aspect').parentElement.hidden = type === 'openai-images';
-        controls.get('imageSize').parentElement.hidden = !['gemini','openai-chat'].includes(type);
+        controls.get('parameterMode').parentElement.hidden = type !== 'openai-images';
+        controls.get('size').parentElement.hidden = type !== 'openai-images' || modern;
+        controls.get('quality').parentElement.hidden = type !== 'openai-images';
+        controls.get('aspect').parentElement.hidden = type === 'openai-images' && !modern;
+        controls.get('imageSize').parentElement.hidden = !modern && !['gemini','openai-chat'].includes(type);
+        controls.get('customSize').parentElement.hidden = !modern || mode === 'grok';
+        controls.get('customSize').value = current.customSize;
+        controls.get('timeout').parentElement.className = 'bb-portrait-field' + (modern ? '' : ' bb-portrait-field-wide');
         controls.get('preset').parentElement.hidden = type !== 'naistera';
     };
     for (const [key, caption, options] of definitions) {
         if (key === 'model') connection.append(connectionActions, status);
         const parent = ['type','endpoint','key','model'].includes(key) ? connection : key === 'style' ? styleBody : parameters;
         const input = field(parent, caption, s[key], options); controls.set(key,input);
+        if (['parameterMode','customSize','preset'].includes(key)) input.parentElement.className += ' bb-portrait-field-wide';
         input.dataset.portraitField = key;
         if (key === 'timeout') { input.min = '15'; input.max = '600'; }
         if (key === 'key') input.autocomplete = 'off';
@@ -178,7 +204,7 @@ export function mountPortraitSettings(root) {
                 extension_settings[MODULE_NAME].portrait.endpoint = endpoints[value];
                 controls.get('endpoint').value = endpoints[value];
             }
-            input.value = value; saveSettingsDebounced(); sync();
+            input.value = value; sync(); saveSettingsDebounced();
             if (['type', 'endpoint', 'key'].includes(key)) invalidate();
             if (key === 'model') manual.parentElement.hidden = true;
         });
@@ -191,7 +217,13 @@ export function mountPortraitSettings(root) {
             });
         }
     }
-    parameters.append(node('small', t('Список подтверждает доступ к API, но не поддержку генерации картинок каждой моделью. OpenAI Images отправляет референсы через /images/edits; при отказе они не отбрасываются.'), 'bb-vn-settings-note'));
+    controls.get('customSize').placeholder = '2048x2048';
+    controls.get('customSize').parentElement.append(node('small', t('Заменяет разрешение и пропорции. Стороны кратны 16, до 3840 px; от 655360 до 8294400 пикселей, пропорции до 3:1.'), 'bb-vn-settings-note'));
+    controls.get('parameterMode').title = t('Для прокси выберите режим вручную. Доступность параметров зависит от сервиса.');
+    const parameterHelp = node('details', '', 'bb-portrait-parameter-help');
+    parameterHelp.append(node('summary', t('О параметрах и референсах')));
+    parameterHelp.append(node('small', t('Список подтверждает доступ к API, но не поддержку генерации картинок каждой моделью. OpenAI Images отправляет референсы через /images/edits; при отказе они не отбрасываются.'), 'bb-vn-settings-note'));
+    parameters.append(parameterHelp);
     root.append(connection, profileBox, advanced, styleBox);
     renderModels(); renderProfiles();
     sync();
@@ -318,6 +350,7 @@ export function openPortraitWorkshop({ charName, description, avatar, isEditorCu
         if (error?.message === 'portrait_image') return t('Нужен PNG, JPEG или WebP до 10 МиБ.');
         if (error?.message === 'portrait_references') return t('Можно добавить до четырёх референсов.');
         if (error?.message === 'portrait_configuration') return t('Заполните подключение изображений и промпт.');
+        if (error?.message === 'portrait_parameters') return t('Проверьте качество, разрешение и пропорции выбранного режима. Точный размер GPT: стороны кратны 16, до 3840 px; от 655360 до 8294400 пикселей, пропорции до 3:1.');
         if (error?.message === 'portrait_empty') return t('Провайдер не вернул изображение.');
         if (error?.message === 'portrait_gallery_missing') return t('Файл портрета недоступен. Его можно убрать из галереи.');
         if (error?.message === 'portrait_edits_unavailable') return t('Сервис не поддерживает /images/edits. Выберите модель или подключение с поддержкой референсов. Запрос без картинок не отправлялся.');

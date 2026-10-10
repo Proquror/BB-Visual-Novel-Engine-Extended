@@ -1,7 +1,8 @@
 // Provider payloads adapted from BB Comic Forge; no runtime dependency on that extension.
 import { withRequestDeadline, VnRequestError, httpRequestError } from './requests.js';
+import { buildImageRequestOptions, getImageParameterMode } from './portrait-image-options.js';
 
-export const PORTRAIT_DEFAULTS = { type: 'openai-images', endpoint: '', key: '', model: '', size: '1024x1024', quality: '', imageSize: '1K', aspect: '1:1', preset: '', style: '', timeout: 180 };
+export const PORTRAIT_DEFAULTS = { type: 'openai-images', endpoint: '', key: '', model: '', parameterMode: 'compatible', customSize: '', size: '1024x1024', quality: '', imageSize: '1K', aspect: '1:1', preset: '', style: '', timeout: 180 };
 export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
 
 export function parsePortraitImage(value) {
@@ -85,8 +86,13 @@ export function buildPortraitRequest(settings, prompt, references = []) {
     let url, body;
     if (s.type === 'openai-images') {
         url = baseUrl(s.endpoint) + (refs.length ? '/images/edits' : '/images/generations');
-        const fields = { model: s.model, prompt: fullPrompt, size: s.size, n: '1', ...(s.quality ? { quality: s.quality } : {}) };
-        if (refs.length) {
+        let options;
+        try { options = buildImageRequestOptions(s); } catch { throw new Error('portrait_parameters'); }
+        const fields = { model: s.model, prompt: fullPrompt, ...options, n: '1' };
+        if (getImageParameterMode(s) === 'grok') {
+            const images = refs.map(ref => ({ type: 'image_url', url: ref.dataUrl }));
+            body = JSON.stringify({ ...fields, n: 1, ...(images.length === 1 ? { image: images[0] } : images.length ? { images } : {}) });
+        } else if (refs.length) {
             body = new FormData();
             for (const [key, value] of Object.entries(fields)) body.append(key, value);
             refs.forEach((ref, i) => {
@@ -117,7 +123,10 @@ export function buildPortraitRequest(settings, prompt, references = []) {
 export function extractPortraitImage(result) {
     if (result?.data_url) return result.data_url;
     const data = result?.data?.[0];
-    if (data?.b64_json) return 'data:image/png;base64,' + data.b64_json;
+    if (data?.b64_json) {
+        const mime = data.b64_json.startsWith('/9j/') ? 'image/jpeg' : data.b64_json.startsWith('UklG') ? 'image/webp' : 'image/png';
+        return 'data:' + mime + ';base64,' + data.b64_json;
+    }
     if (data?.url) return data.url;
     for (const part of result?.candidates?.[0]?.content?.parts || []) {
         const image = part.inlineData || part.inline_data;
@@ -147,7 +156,17 @@ export async function generatePortrait(settings, prompt, references, signal) {
     const request = buildPortraitRequest(settings, prompt, references);
     const timeout = Math.max(15, Math.min(600, Number(settings.timeout) || 180));
     return withRequestDeadline(async requestSignal => {
-        const response = await fetch(request.url, { ...request.init, signal: requestSignal });
+        let response = await fetch(request.url, { ...request.init, signal: requestSignal });
+        // Retry only the known proxy schema rejection, preserving every reference.
+        if (!response.ok && response.status === 400 && (settings.type || PORTRAIT_DEFAULTS.type) === 'openai-images' && getImageParameterMode(settings) === 'grok' && /\/images\/edits$/.test(request.url)) {
+            const error = await response.json().catch(() => null);
+            if (/images(?:\[\]|\[\d+\])\.image_url\b[^\r\n]*?(?:required|missing)/i.test(String(error?.error?.message || ''))) {
+                if (requestSignal.aborted) throw new VnRequestError('cancelled');
+                const { image, images, ...options } = JSON.parse(request.init.body);
+                const refs = images || (image ? [image] : []);
+                if (refs.length) response = await fetch(request.url, { ...request.init, body: JSON.stringify({ ...options, images: refs.map(ref => ({ image_url: ref.url })) }), signal: requestSignal });
+            }
+        }
         if (!response.ok && settings.type !== 'openai-chat' && /\/images\/edits$/.test(request.url) && [404, 405, 501].includes(response.status)) throw new Error('portrait_edits_unavailable');
         if (!response.ok) throw httpRequestError(response.status);
         const value = extractPortraitImage(await response.json());
