@@ -56,10 +56,122 @@ test('Russian relationship prompt uses Russian fields and the tracked character 
     assert.match(prompt,/use these exact canonical names in <name>: Alex/);
     assert.match(prompt,/Do not translate, transliterate, or change the script of a name/);
 });
+test('first-contact instructions apply with an empty tracker and alongside existing contacts',async()=>{
+    const h=await harness();
+    const checkPrompt=()=>{
+        const prompt=h.api.getCombinedSocial();
+        assert.match(prompt,/you MUST include a <bb-social-update>, even if no relationship change occurred/);
+        assert.match(prompt,/characters introduced earlier in the story who are still missing from the tracker/);
+        assert.match(prompt,/use "none" for BOTH impacts/);
+        assert.match(prompt,/For already tracked characters, record a relationship update ONLY when/);
+        assert.match(prompt,/Do not register people merely mentioned, absent characters, crowds, or unnamed background figures/);
+        assert.match(prompt,/NEVER create a social update for \{\{user\}\}/);
+        return prompt;
+    };
+    checkPrompt();
+    h.api.importActivePersonaSnapshot(fixture());
+    h.context.chat.push({name:'Alex',mes:'Alex enters the room',swipe_id:0,extra:{}});
+    h.api.recalculateAllStats(false);
+    assert.match(checkPrompt(),/New Character Rule: You MUST register named characters not yet tracked/);
+});
+
+test('neutral first contact is parsed, saved and replayed without relationship inflation',async()=>{
+    const h=await harness();
+    const message={name:'Alex',mes:'Alex greets Player.',swipe_id:0,extra:{}};
+    h.context.chat.push(message);
+    h.api.recalculateAllStats(false);
+    assert.equal(Object.keys(h.state.currentCalculatedStats).length,0);
+    message.mes+='<div style="display: none;" class="bb-vn-data"><bb-social-updates><bb-social-update><name>Alex</name><friendship_impact>none</friendship_impact><romance_impact>none</romance_impact><user_label>Visitor</user_label><reason>Introduced himself during the conversation</reason><emotion>Calm</emotion></bb-social-update></bb-social-updates></div>';
+    h.api.recalculateAllStats(false);
+    assert.equal(message.extra.bb_social_swipes[0][0].name,'Alex');
+    assert.equal(message.mes,'Alex greets Player.');
+    for(let replay=0;replay<2;replay++){
+        const stats=h.state.currentCalculatedStats.Alex;
+        assert.ok(stats);
+        assert.equal(stats.affinity,0);
+        assert.equal(stats.romance,0);
+        assert.equal(stats.history.length,0);
+        assert.equal(stats.memories.soft.length,0);
+        assert.equal(stats.memories.deep.length,0);
+        assert.equal(h.metadata.bb_vn_global_log.length,0);
+        assert.equal(Object.keys(h.state.currentCalculatedStats).length,1);
+        h.api.recalculateAllStats(false);
+    }
+    assert.match(h.api.getCombinedSocial(),/use these exact canonical names in <name>: Alex/);
+    h.context.chat.push({name:'Alex',mes:'The conversation continues.<bb-social-updates><bb-social-update><name>Player</name><friendship_impact>none</friendship_impact><romance_impact>none</romance_impact><reason>Self</reason></bb-social-update></bb-social-updates>',swipe_id:0,extra:{}});
+    h.api.recalculateAllStats(false);
+    assert.equal(Object.keys(h.state.currentCalculatedStats).length,1);
+    assert.equal(h.state.currentCalculatedStats.Player,undefined);
+});
+
 test('legacy bare data is accepted, unknown envelopes are not',async()=>{
     const h=await harness();assert.equal(h.snapshot.parseSnapshot(fixture().data).summary.format,'legacy');
     for(const change of [{module:'Other'},{schema_version:2},{schema_version:'1'},{schema_version:null}])assert.throws(()=>h.api.importActivePersonaSnapshot({...fixture(),...change}));
     assert.throws(()=>h.api.importActivePersonaSnapshot({data:fixture().data}));
+});
+
+test('a daughter who is also a master keeps her model label at zero trust',async()=>{
+    const h=await harness();
+    h.context.chat.push({name:'Alex',mes:'Alex speaks to his daughter.',swipe_id:0,extra:{bb_social_swipes:{0:[{
+        name:'Alex',friendship_impact:'none',romance_impact:'none',role_dynamic:'достойная дочь и мастер',reason:'Discussed the workshop',
+    }]}}});
+    h.api.recalculateAllStats(false);
+    assert.equal(h.state.currentCalculatedStats.Alex.status,'достойная дочь и мастер');
+    assert.equal(h.state.currentCalculatedStats.Alex.affinity,0);
+    assert.equal(h.state.currentCalculatedStats.Alex.romance,0);
+    assert.match(h.api.getCombinedSocial(),/\[Status: достойная дочь и мастер\]/);
+});
+
+test('missing or rejected automatic labels remain unset and rejected text is available for review',async()=>{
+    for(const label of ['', 'который помог мне']){
+        const h=await harness();
+        h.context.chat.push({name:'Alex',mes:'Alex speaks.',swipe_id:0,extra:{bb_social_swipes:{0:[{
+            name:'Alex',friendship_impact:'none',romance_impact:'none',role_dynamic:label,reason:'First contact',
+        }]}}});
+        h.api.recalculateAllStats(false);
+        assert.equal(h.state.currentCalculatedStats.Alex.status,'');
+        assert.equal(h.api.createRelationshipStatusSession('Alex').suggestion,label);
+        assert.match(h.api.getCombinedSocial(),/\[Status: Not established\]/);
+    }
+});
+
+test('manual labels preserve scores and source events, survive snapshots and can return to automatic',async()=>{
+    const h=await harness();
+    const event={name:'Alex',friendship_impact:'minor_positive',romance_impact:'none',role_dynamic:'Trusted friend',reason:'Helped carry tools'};
+    h.context.chat.push({name:'Alex',mes:'Alex accepts help.',swipe_id:0,extra:{bb_social_swipes:{0:[event]}}});
+    h.api.recalculateAllStats(false);
+    const before=JSON.stringify(h.state.currentCalculatedStats.Alex);
+    const source=JSON.stringify(event);
+    assert.equal(h.api.createRelationshipStatusSession('Alex').value,'Trusted friend');
+    assert.equal(h.api.createRelationshipStatusSession('Alex').save('Любимая дочь'),true);
+    assert.equal(h.api.getCharacterProfile('Alex').relationshipStatus,'Любимая дочь');
+    assert.equal(JSON.stringify(h.state.currentCalculatedStats.Alex),before);
+    assert.equal(JSON.stringify(event),source);
+    assert.match(h.api.getCombinedSocial(),/\[Status: Любимая дочь\]/);
+    assert.match(h.api.getCombinedSocial(),/\[User-confirmed label: Любимая дочь\]/);
+    const snapshot=h.api.exportActivePersonaSnapshot();
+    const restored=await harness();restored.api.importActivePersonaSnapshot(snapshot);restored.api.recalculateAllStats(false);
+    assert.equal(restored.api.getCharacterProfile('Alex').relationshipStatus,'Любимая дочь');
+    assert.match(restored.api.getCombinedSocial(),/\[Status: Любимая дочь\]/);
+    assert.equal(restored.api.createRelationshipStatusSession('Alex').save(''),true);
+    assert.match(restored.api.getCombinedSocial(),/\[Status: Trusted friend\]/);
+    assert.equal(h.api.createRelationshipStatusSession('Alex').save(''),true);
+    assert.match(h.api.getCombinedSocial(),/\[Status: Trusted friend\]/);
+});
+
+test('status sessions reject changed chats, personas and concurrent label edits',async()=>{
+    for(const change of ['chat','persona','label']){
+        const h=await harness();h.api.importActivePersonaSnapshot(fixture());h.api.recalculateAllStats(false);
+        const session=h.api.createRelationshipStatusSession('Alex');
+        if(change==='chat') h.context.chatId='other-chat';
+        if(change==='persona') h.context.user_avatar='other-persona.png';
+        if(change==='label') h.api.updateCharacterProfile('Alex',{relationshipStatus:'Other label'});
+        const stableMetadata=()=>JSON.stringify(h.metadata,(key,value)=>key==='updated_at'?undefined:value);
+        const before=stableMetadata(),saves=h.saves;
+        assert.equal(session.save('Любимая дочь'),false);
+        assert.equal(stableMetadata(),before);
+        assert.equal(h.saves,saves);
+    }
 });
 test('invalid structures cannot partially modify persona data',async()=>{
     const h=await harness();h.api.importActivePersonaSnapshot(fixture());h.api.recalculateAllStats(false);

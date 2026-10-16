@@ -75,7 +75,7 @@ export function parseSnapshot(raw) {
         object(data.char_registry);
         if (Object.keys(data.char_registry).length > 1000) fail();
         for (const entry of Object.values(data.char_registry)) {
-            fields(entry, ['id', 'primary_name', 'description', 'avatar', 'avatarSource'], ['created_at']);
+            fields(entry, ['id', 'primary_name', 'description', 'avatar', 'avatarSource', 'relationshipStatus'], ['created_at']);
             string(entry.primary_name);
             if (own(entry, 'aliases')) array(entry.aliases, string);
             if (own(entry, 'avatarCrop')) fields(entry.avatarCrop, [], ['x', 'y', 'zoom']);

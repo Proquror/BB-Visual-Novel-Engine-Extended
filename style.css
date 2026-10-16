@@ -3264,3 +3264,11 @@ body.bb-social-chat-visible:not(.bb-social-chat-leaving) #bb-social-hud-toggle.b
 .bb-portrait-appearance-help p { margin: 0 0 10px; font-size: 13px; line-height: 1.5; color: #c8d8eb; }
 .bb-portrait-appearance-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .bb-portrait-appearance-actions .menu_button { flex: 1 1 145px; }
+
+.bb-char-status-edit { border: 0; background: transparent; color: #a7c8ed; padding: 4px 0; font: inherit; font-size: 11px; cursor: pointer; white-space: normal; text-align: left; }
+.bb-char-status-edit:hover { color: #fff; text-decoration: underline; }
+.bb-char-status-edit:focus-visible { outline: 2px solid #a7c8ed; outline-offset: 3px; border-radius: 3px; }
+.bb-relationship-status-dialog label { display: grid; gap: 8px; font-size: 14px; }
+.bb-relationship-status-dialog .text_pole { width: 100%; min-width: 0; box-sizing: border-box; }
+.bb-relationship-status-dialog p { overflow-wrap: anywhere; font-size: 13px; color: #c8d8eb; }
+.bb-relationship-status-dialog header h3 { overflow-wrap: anywhere; min-width: 0; }

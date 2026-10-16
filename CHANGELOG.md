@@ -4,6 +4,14 @@
 
 ## Русский
 
+### Добавление контактов и статусы отношений — 16 октября 2026 (без изменения версии)
+
+- Уточнены инструкции модели: именованный персонаж при прямом взаимодействии добавляется в трекер даже без изменения отношений, в том числе если он появился в истории раньше. Нейтральный контакт не начисляет баллы доверия или влечения.
+- Подпись отношения учитывает установленное родство независимо от баллов. Корректные подписи вроде «достойная дочь и мастер» больше не отбрасываются из-за отдельных слов профессии или роли.
+- Если автоматическая подпись отсутствует или отклонена, карточка показывает «Статус не задан» и предлагает «Указать статус» вместо подстановки «Незнакомец». Отклонённый вариант модели доступен в редакторе.
+- Статус можно задать или изменить вручную без изменения баллов. Ручная подпись имеет приоритет перед моделью, сохраняется в профиле и snapshot; кнопка «Автоматически» возвращает автоматический вариант.
+- Добавлены регрессионные проверки нейтральных контактов, подписей, сохранения, отмены и защиты редактора при смене чата или персоны.
+
 ### Изоляция карточек персонажей — 10 октября 2026 (без изменения версии)
 
 - При генерации описаний и портретов карточки подбираются только среди текущего бота или участников текущей группы. Посторонняя карточка с совпадающим именем больше не подмешивает биографию и внешность из другой истории или AU.
@@ -90,6 +98,14 @@
 Источник: [78557dc](https://github.com/maxkara14/BB-Visual-Novel-Engine/commit/78557dc), включая версию в manifest. Более ранняя история здесь не реконструирована.
 
 ## English
+
+### Contact discovery and relationship labels — October 16, 2026 (no version change)
+
+- Clarified model instructions: named characters are registered on direct interaction even without a relationship change, including people introduced earlier in the story. Neutral contacts do not award trust or attraction points.
+- Relationship labels respect established family ties independently of scores. Valid labels such as “worthy daughter and master” are no longer rejected because they contain an occupation or role word.
+- Missing or rejected automatic labels now show “Status not set” with a “Set status” action instead of falling back to “Stranger.” Rejected model suggestions are available in the editor.
+- Labels can be set or edited manually without changing scores. Manual labels take priority over model output and persist in profiles and snapshots; “Automatic” restores the automatic label.
+- Added regression coverage for neutral contacts, labels, persistence, cancellation and editor safeguards when switching chats or personas.
 
 ### Character card isolation — October 10, 2026 (no version change)
 

@@ -104,10 +104,12 @@ CRITICAL RULES:
 5. NEVER wrap any other part of the assistant reply in hidden HTML. Only the social block above can be hidden.
 6. Do not hide, alter, or rewrite user-provided regex, code, JSON, or text fragments.
 6a. NEVER replace <bb-social-updates> or <bb-social-update> with alternative tags such as <character>, <relationship>, or <update>.
-7. Record a relationship update ONLY when {{user}} created a genuinely NEW relational beat in this turn. Ongoing presence in the same room, continued comfort, repeated closeness, or the same unresolved mood is NOT a new shift by itself.
+7. First-time tracking and relationship changes are separate. For each named character not yet tracked who directly interacts with {{user}} or directly reacts to {{user}} in this turn, you MUST include a <bb-social-update>, even if no relationship change occurred. This also applies to characters introduced earlier in the story who are still missing from the tracker. Do not wait for a major event. If no genuine change occurred, use "none" for BOTH impacts; never invent a score change just to register a character. Do not register people merely mentioned, absent characters, crowds, or unnamed background figures.
+7a. For already tracked characters, record a relationship update ONLY when {{user}} created a genuinely NEW relational beat in this turn. Ongoing presence in the same room, continued comfort, repeated closeness, or the same unresolved mood is NOT a new shift by itself. This restriction must NOT prevent first-time tracking under rule 7.
 8. If this turn only continues the same emotional beat as the previous turns, prefer "none" impacts instead of restating the same reason.
 9. Never repeat the same <reason> on consecutive turns for the same character with only a different <emotion>. If the cause has not meaningfully changed, do not describe it as a new update.
 10. <user_label> is NOT the character's job, title, class, personality, or self-image. It is ONLY how this character labels {{user}} in their mind.
+11. Preserve explicit established relationships from the chat, persona, and character card when choosing <user_label>, including family ties. For a father addressing his daughter, label {{user}} as his daughter, not as a stranger merely because tracking just started or Trust is 0. Trust scores do not determine kinship. If the relationship cannot be established from context, leave <user_label> empty instead of guessing. A user-confirmed label in [CURRENT RELATIONSHIP STATUS] takes priority over your inferred label.
 
 HTML TAG FIELDS (STRICT):
 - <name> Concrete character name. (e.g., "Alex"). No collective nouns. For an already tracked character, copy their canonical name exactly from [CURRENT RELATIONSHIP STATUS]. Otherwise use the established spelling from the character card or story. Do not translate, transliterate, or change the script of a name to match the output language.
@@ -121,7 +123,7 @@ HTML TAG FIELDS (STRICT):
 - <user_label> MUST answer: "what has {{user}} become to <name>?" It must NOT answer: "who is <name>?" or "what does <name> feel?"
 - Before writing <user_label>, silently replace it into this sentence: "<name> now sees {{user}} as ___." If the sentence would describe <name> instead of {{user}}, rewrite it.
 - <user_label> may include {{user}}'s actual persona role/profession ONLY if it describes how <name> sees {{user}}. For example, if {{user}} is truly a guard, "unreliable guard" can be valid. If <name> is a caring aunt, do NOT write "caring aunt"; write what {{user}} became to her instead, such as "beloved nephew", "troublesome ward", or "stubborn child".
-- <reason> Short explanation of WHY the NEW impact happened in this turn. Describe the fresh trigger, not the general situation.
+- <reason> Short explanation of WHY the NEW impact happened in this turn. Describe the fresh trigger, not the general situation. For first-time tracking with "none" impacts, briefly describe the actual interaction that establishes this contact without claiming an emotional change.
 - <emotion> 1-2 words describing the character's internal emotional state. If using two nouns, separate with a comma (e.g., "shock, hurt", "joy").`;
 
 export const OPTIONS_PROMPT = `Analyze the recent chat. Generate exactly 3 highly distinct, engaging actions {{user}} can take right now to DRIVE THE STORY FORWARD.

@@ -710,6 +710,7 @@ function normalizeAvatarCrop(value = {}) {
 function getCharacterProfileFromEntry(entry = null) {
     return {
         description: normalizeCharacterDescription(entry?.description || ''),
+        relationshipStatus: sanitizeRelationshipStatus(entry?.relationshipStatus || ''),
         avatar: String(entry?.avatar || '').trim(),
         avatarSource: String(entry?.avatarSource || '').trim(),
         avatarCrop: normalizeAvatarCrop(entry?.avatarCrop),
@@ -723,6 +724,9 @@ function applyCharacterProfileToEntry(entry, updates = {}) {
 
     if (Object.prototype.hasOwnProperty.call(updates, 'description')) {
         entry.description = normalizeCharacterDescription(updates.description);
+    }
+    if (Object.prototype.hasOwnProperty.call(updates, 'relationshipStatus')) {
+        entry.relationshipStatus = sanitizeRelationshipStatus(updates.relationshipStatus);
     }
 
     if (Object.prototype.hasOwnProperty.call(updates, 'avatar')) {
@@ -1706,6 +1710,38 @@ export function updateCharacterProfile(charName = '', updates = {}) {
     return profile;
 }
 
+export function createRelationshipStatusSession(charName = '') {
+    const initial = SillyTavern.getContext();
+    const chat = initial.chat;
+    const personaRef = getCurrentPersonaIdentity().ref;
+    const { scopeState } = bindActivePersonaState();
+    const key = JSON.stringify([initial.chatId, initial.characterId, initial.groupId, getCurrentPersonaScopeKey()]);
+    const identity = resolveCharacterIdentity(charName, { allowCreate: false, allowSuggestions: false });
+    const initialStatus = getCharacterProfile(charName).relationshipStatus;
+    const current = () => {
+        const next = SillyTavern.getContext();
+        return next.chat === chat
+            && getCurrentPersonaIdentity().ref === personaRef
+            && JSON.stringify([next.chatId, next.characterId, next.groupId, getCurrentPersonaScopeKey()]) === key
+            && bindActivePersonaState().scopeState === scopeState
+            && !!identity?.id
+            && resolveCharacterIdentity(charName, { allowCreate: false, allowSuggestions: false })?.id === identity.id
+            && getCharacterProfile(charName).relationshipStatus === initialStatus;
+    };
+    return {
+        current,
+        value: initialStatus || currentCalculatedStats[charName]?.status || '',
+        suggestion: currentCalculatedStats[charName]?.statusSuggestion || '',
+        save(value) {
+            if (!current()) return false;
+            updateCharacterProfile(charName, { relationshipStatus: value });
+            saveChatDebounced();
+            recalculateAllStats();
+            return true;
+        },
+    };
+}
+
 export function renameCharacterRecord(fromName = '', toName = '') {
     const requestedName = String(toName || '').trim();
     if (!requestedName || isCollectiveEntityName(requestedName) || isUserPersonaCharacterName(requestedName)) {
@@ -1896,6 +1932,9 @@ export function mergeCharacterRecords(fromName = '', toName = '') {
     sourceNames.forEach(name => addAliasToEntry(targetEntry, name, scopeState));
     const sourceProfile = getCharacterProfileFromEntry(sourceEntry);
     const targetProfile = getCharacterProfileFromEntry(targetEntry);
+    if (!targetProfile.relationshipStatus && sourceProfile.relationshipStatus) {
+        targetEntry.relationshipStatus = sourceProfile.relationshipStatus;
+    }
     if (!targetProfile.description && sourceProfile.description) {
         targetEntry.description = sourceProfile.description;
     }
@@ -2220,9 +2259,8 @@ export function getCombinedSocial() {
 
         characters.forEach(char => {
             const stats = currentCalculatedStats[char];
-            const tier = getTierInfo(stats.affinity).label;
-            const status = stats.status || getUnforgettableRoleStatus(stats.memories?.deep) || tier;
             const profile = getCharacterProfile(char);
+            const status = profile.relationshipStatus || stats.status || 'Not established';
             
             const recent = (stats.memories?.soft || []).map(m => m.text).join('; ');
             const deepMemories = stats.memories?.deep || [];
@@ -2232,6 +2270,7 @@ export function getCombinedSocial() {
             const traitsText = coreTraits.length > 0 ? coreTraits.map(t => t.trait).join(' ') : '';
 
             combinedStr += `- ${char}: [Status: ${status}] [Trust: ${stats.affinity}] [Romance: ${stats.romance || 0}]`;
+            if (profile.relationshipStatus) combinedStr += ` [User-confirmed label: ${profile.relationshipStatus}]`;
             if (profile.description) combinedStr += ` [Profile: ${profile.description}]`;
             if (recent) combinedStr += ` [Recent: ${recent}]`;
             if (unforgettable) combinedStr += ` [Unforgettable: ${unforgettable}]`; 
@@ -2266,7 +2305,7 @@ export function getCombinedSocial() {
         combinedStr += `2. Memory: Characters must act based on 'Recent' (short-term mood) and 'Unforgettable' (permanent emotional anchor) memories.\n`;
         combinedStr += `3. Profile Notes: If a character has a Profile note, treat it as active supporting canon for this scene.\n`;
         combinedStr += `4. Name Consistency: For already tracked characters relevant to the current scene, use these exact canonical names in <name>: ${characters.join(', ')}.\n`;
-        combinedStr += `5. New Character Rule: If a genuinely new person appears in this specific turn and they are not one of the tracked names above, you MAY add a new character instead of forcing them into an old identity.`;
+        combinedStr += `5. New Character Rule: You MUST register named characters not yet tracked when they directly interact with {{user}} or directly react to {{user}} in this turn, including people introduced earlier in the story. Use their established names instead of forcing them into an old identity. First-time tracking does not require a relationship change: use "none" for both impacts when no genuine change occurred. Do not register mere mentions or absent characters.`;
 
         if (impactInstructions.length > 0) {
             combinedStr += `\n\n[UNFORGETTABLE IMPACT LOGIC]:\n${impactInstructions.join('\n')}\n`;
@@ -3066,6 +3105,9 @@ export function recalculateAllStats(isNewMessage = false) {
                     { allowOverride: isManualStatusOverride },
                 );
                 if (safeStatus) newStats[charName].status = safeStatus;
+                if (!safeStatus && currentStatus) {
+                    newStats[charName].statusSuggestion = sanitizeRelationshipStatus(currentStatus);
+                }
 
                 const moodlet = sanitizeMoodlet(currentEmotion);
                 const dominantImpact = getDominantImpactEntry(f_delta, r_delta);

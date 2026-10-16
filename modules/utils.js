@@ -590,13 +590,14 @@ export function isLikelySelfRoleStatus(status = "") {
 export function isNarrativeStatusLeak(status = "") {
     const value = normalizeStatusLabel(status).toLowerCase();
     if (!value) return false;
-    return /(котор(ый|ая|ое|ые)|меня|мне|мой|моя|моё|мои)\b/i.test(value);
+    return /(?:^|[^\p{L}\p{N}_])(?:который|которая|которое|которые|меня|мне|мой|моя|моё|мои)(?=$|[^\p{L}\p{N}_])/iu.test(value);
 }
 
 export function isValidUserFacingStatus(status = "") {
     const value = sanitizeRelationshipStatus(status);
     if (!value) return false;
-    if (isLikelySelfRoleStatus(value)) return false;
+    // A profession can describe the user too; individual role words cannot
+    // determine whose identity a free-form relationship label describes.
     if (isNarrativeStatusLeak(value)) return false;
     return true;
 }

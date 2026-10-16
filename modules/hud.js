@@ -1,4 +1,5 @@
 import { mountHiddenCharactersButton } from './hidden-characters-ui.js';
+import { openRelationshipStatusEditor } from './relationship-status-ui.js';
 import { openPortraitWorkshop } from './portrait-ui.js';
 import { mountCharacterToolbar, syncCharacterToolbarContext } from './character-toolbar.js';
 import { refreshSnapshotControls } from './snapshot-controls.js';
@@ -467,7 +468,9 @@ function buildCharacterCardHtml(charName = '') {
     const romance = stats.romance || 0;
     const tier = getTierInfo(affinity);
     const memories = stats.memories || { soft: [], deep: [], archive: [] };
-    const displayStatus = stats.status || getUnforgettableRoleStatus(memories.deep) || t(tier.label);
+    const profile = getCharacterProfile(charName);
+    const hasStatus = !!(profile.relationshipStatus || stats.status);
+    const displayStatus = profile.relationshipStatus || stats.status || t('Статус не задан');
     const unforgettableImpact = getUnforgettableImpact(memories.deep);
     const latestDeltas = getLatestRelationshipDeltas(stats.history || []);
     const lastHistory = [...(stats.history || [])].reverse().find(item => item.delta !== 0);
@@ -475,7 +478,6 @@ function buildCharacterCardHtml(charName = '') {
     const baseAffinity = chat_metadata['bb_vn_char_bases']?.[charName] ?? 0;
     const baseRomance = chat_metadata['bb_vn_char_bases_romance']?.[charName] ?? 0;
     const isPlatonic = (chat_metadata['bb_vn_platonic_chars'] || []).includes(charName);
-    const profile = getCharacterProfile(charName);
     const avatarHtml = renderCharacterAvatar(profile, charName);
 
     let barStyle = '';
@@ -598,7 +600,8 @@ function buildCharacterCardHtml(charName = '') {
                         </div>
                         <div class="bb-char-summary-status-row">
                             <span class="bb-char-direction bb-char-direction-compact"><i class="fa-solid fa-eye"></i> отношение к вам</span>
-                            <span class="bb-char-tier ${tier.class}" title="${escapeHtml(displayStatus)}">${escapeHtml(displayStatus)}</span>
+                            <span class="bb-char-tier ${hasStatus ? tier.class : ''}" title="${escapeHtml(displayStatus)}">${escapeHtml(displayStatus)}</span>
+                            <button type="button" class="bb-char-status-edit" data-char="${escapeHtml(charName)}" title="Статус отношений">${hasStatus ? t('Изменить статус') : t('Указать статус')}</button>
                             ${memories.deep.length > 0 ? `<span class="bb-unforgettable-impact compact">${escapeHtml(t(unforgettableImpact.label))}</span>` : ''}
                         </div>
                         <div class="${scorelineClass}">
@@ -906,9 +909,15 @@ export function renderSocialHud() {
 
             mountCharacterToolbar(charsBox, currentCalculatedStats, extension_settings[MODULE_NAME], context, getCurrentPersonaScopeKey(), saveSettingsDebounced);
             jQuery('.bb-char-card').off('click').on('click', function(e) {
-                if (jQuery(e.target).closest('.bb-char-edit-btn, .bb-char-editor, .bb-char-body, .bb-relationship-breakdown, .bb-btn-crystallize-pos, .bb-btn-crystallize-neg').length) return;
+                if (jQuery(e.target).closest('.bb-char-edit-btn, .bb-char-status-edit, .bb-char-editor, .bb-char-body, .bb-relationship-breakdown, .bb-btn-crystallize-pos, .bb-btn-crystallize-neg').length) return;
                 const card = jQuery(this);
                 setCharacterCardExpanded(card, !card.hasClass('expanded'));
+            });
+
+            jQuery('.bb-char-status-edit').off('click').on('click', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+                openRelationshipStatusEditor(String(jQuery(this).attr('data-char') || ''));
             });
 
             jQuery('.bb-char-edit-btn').off('click').on('click', function(e) {

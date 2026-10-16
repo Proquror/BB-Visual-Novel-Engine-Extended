@@ -781,5 +781,15 @@ export const EN = {
     "Модель вернула некорректные варианты. Сделайте реролл.": "The model returned invalid options. Please reroll.",
     "Не удалось сгенерировать варианты": "Could not generate options",
     "Готово": "Done",
-    "Завершено без новых вариантов": "Finished without new options"
+    "Завершено без новых вариантов": "Finished without new options",
+    "Статус не задан": "Status not set",
+    "Указать статус": "Set status",
+    "Изменить статус": "Edit status",
+    "Статус отношений": "Relationship label",
+    "Кем ваш персонаж является для этого персонажа?": "Who is your character to this character?",
+    "Например: любимая дочь, давний друг. До 4 слов. Баллы отношений не изменятся.": "For example: beloved daughter, longtime friend. Up to 4 words. Relationship scores will stay the same.",
+    "Вариант модели:": "Model suggestion:",
+    "Чат, персона или статус изменились. Откройте редактор заново.": "The chat, persona or label changed. Reopen the editor.",
+    "Введите статус или выберите «Автоматически».": "Enter a label or select Automatic.",
+    "Автоматически": "Automatic"
 };
