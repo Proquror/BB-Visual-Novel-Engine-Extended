@@ -267,8 +267,6 @@ function getLatestUserPersonaIdentityFromChat(chat = []) {
 function getCurrentPersonaAvatarRef() {
     try {
         const context = SillyTavern.getContext();
-        const chat = Array.isArray(context?.chat) ? context.chat : [];
-        const lastUserIdentity = getLatestUserPersonaIdentityFromChat(chat);
         const directAvatar = firstNonEmptyString([
             context?.user_avatar,
             context?.userAvatar,
@@ -277,6 +275,8 @@ function getCurrentPersonaAvatarRef() {
             chat_metadata['user_avatar'],
         ]);
         if (directAvatar) return directAvatar;
+        const chat = Array.isArray(context?.chat) ? context.chat : [];
+        const lastUserIdentity = getLatestUserPersonaIdentityFromChat(chat);
         return lastUserIdentity?.avatarRef || '';
     } catch (error) {
         void error;
@@ -292,10 +292,13 @@ function getCurrentPersonaIdentity() {
         void error;
     }
 
-    const chat = Array.isArray(context?.chat) ? context.chat : [];
-    const lastUserIdentity = getLatestUserPersonaIdentityFromChat(chat);
     const currentName = getCurrentPersonaName();
     const currentAvatarRef = getCurrentPersonaAvatarRef();
+    if (currentName && currentAvatarRef) {
+        return { name: currentName, avatarRef: currentAvatarRef, ref: buildPersonaIdentityRef({ name: currentName, avatarRef: currentAvatarRef }) };
+    }
+    const chat = Array.isArray(context?.chat) ? context.chat : [];
+    const lastUserIdentity = getLatestUserPersonaIdentityFromChat(chat);
     const name = currentName || lastUserIdentity?.name || '';
     const avatarRef = currentAvatarRef || (!currentName || normalizePersonaIdentityName(currentName) === normalizePersonaIdentityName(lastUserIdentity?.name || '')
         ? (lastUserIdentity?.avatarRef || '')
@@ -508,6 +511,30 @@ function collectMessageScopeKeys(msg = null) {
     return scopeKeys;
 }
 
+// Share history scans only during one synchronous operation. Edits, swipes and
+// branch changes in subsequent operations always see a freshly built index.
+let scopeOwnershipCache = null;
+
+function withScopeOwnershipCache(operation) {
+    if (scopeOwnershipCache) return operation();
+    scopeOwnershipCache = new Map();
+    try {
+        return operation();
+    } finally {
+        scopeOwnershipCache = null;
+    }
+}
+
+function getScopeOwnershipIndex(chat = []) {
+    if (!scopeOwnershipCache) return buildScopeOwnershipIndex(chat);
+    let cached = scopeOwnershipCache.get(chat);
+    if (!cached || cached.length !== chat.length) {
+        cached = { length: chat.length, ownership: buildScopeOwnershipIndex(chat) };
+        scopeOwnershipCache.set(chat, cached);
+    }
+    return cached.ownership;
+}
+
 function buildScopeOwnershipIndex(chat = []) {
     if (!Array.isArray(chat) || chat.length === 0) return {};
     const ownership = {};
@@ -619,7 +646,7 @@ function ensureResolvedPersonaScope() {
 
     if (!binding || !binding.scope_key || !scopes[binding.scope_key]) {
         const chat = SillyTavern.getContext().chat || [];
-        const ownership = buildScopeOwnershipIndex(chat);
+        const ownership = getScopeOwnershipIndex(chat);
         const chosenScopeKey = choosePersonaScopeCandidate(scopes, identity, legacyScopeKey, activeScopeKey, ownership);
         binding = {
             scope_key: chosenScopeKey,
@@ -635,9 +662,9 @@ function ensureResolvedPersonaScope() {
     if (legacyScopeKey && legacyScopeKey !== binding.scope_key && !binding.aliases.includes(legacyScopeKey)) {
         binding.aliases.push(legacyScopeKey);
     }
-    if (identity?.ref) {
+    if (identity?.ref && Object.keys(scopes).some(key => key !== binding.scope_key && !binding.aliases.includes(key))) {
         const chat = SillyTavern.getContext().chat || [];
-        const ownership = buildScopeOwnershipIndex(chat);
+        const ownership = getScopeOwnershipIndex(chat);
         Object.keys(scopes).forEach(candidateScopeKey => {
             if (!candidateScopeKey || candidateScopeKey === binding.scope_key) return;
             const owner = getDominantPersonaRefForScope(ownership, candidateScopeKey);
@@ -667,7 +694,11 @@ function ensureResolvedPersonaScope() {
 }
 
 export function getCurrentPersonaScopeKey() {
-    return ensureResolvedPersonaScope().scopeKey;
+    const identity = getCurrentPersonaIdentity();
+    const identityRef = identity?.ref || `legacy:${getLegacyPersonaTextScopeKey()}`;
+    const binding = chat_metadata.bb_vn_persona_bindings?.[identityRef];
+    if (binding?.scope_key && chat_metadata.bb_vn_persona_states?.[binding.scope_key]) return binding.scope_key;
+    return withScopeOwnershipCache(() => ensureResolvedPersonaScope().scopeKey);
 }
 
 function cloneJsonData(value, fallback) {
@@ -2249,6 +2280,10 @@ function filterStaleSceneUpdates(activeUpdates = [], msg = null, idx = -1, chat 
 }
 
 export function getCombinedSocial() {
+    return withScopeOwnershipCache(buildCombinedSocial);
+}
+
+function buildCombinedSocial() {
     const { scopeState, aliasSet } = bindActivePersonaState();
     let combinedStr = SOCIAL_PROMPT + "\n\n" + buildOutputLanguageDirective();
     const characters = getPromptRelevantCharacters(scopeState, aliasSet);
@@ -2708,6 +2743,7 @@ export function scanAndCleanMessage(msg, messageId, trackDebug = false) {
         }
     }
     
+    if (modified) scopeOwnershipCache?.delete(SillyTavern.getContext().chat);
     if (modified && messageId !== undefined) {
         const msgElement = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
         if (msgElement) msgElement.innerHTML = SillyTavern.getContext().markdownToHtml(msg.mes);
@@ -2743,6 +2779,10 @@ export async function handleNewCharacterInterviews(chars) {
 }
 
 export function recalculateAllStats(isNewMessage = false) {
+    return withScopeOwnershipCache(() => recalculateAllStatsNow(isNewMessage));
+}
+
+function recalculateAllStatsNow(isNewMessage = false) {
     resetMemoryEditor(SillyTavern.getContext().chat);
     resetRelationshipEventEditor(SillyTavern.getContext().chat);
     if (extension_settings[MODULE_NAME]?.disableRelationshipTracker === true) {
@@ -2756,6 +2796,7 @@ export function recalculateAllStats(isNewMessage = false) {
     const recentRelationshipUpdateIndexes = new Map();
     const recentRelationshipUpdates = [];
     let needsSave = purgeUserPersonaTracking(scopeState);
+    if (needsSave) scopeOwnershipCache?.delete(SillyTavern.getContext().chat);
     if (needsSave && scopeState.snapshot_baseline) recordActivePersonaBranchState(true);
     setCurrentCalculatedStats(newStats);
     currentStoryMoments.length = 0;
@@ -2875,6 +2916,7 @@ export function recalculateAllStats(isNewMessage = false) {
                 if (t.scope && !aliasSet.has(t.scope)) return;
                 if (!t.scope || t.scope !== scopeKey) {
                     t.scope = scopeKey;
+                    scopeOwnershipCache?.delete(chat);
                     needsSave = true;
                 }
 
@@ -2994,6 +3036,7 @@ export function recalculateAllStats(isNewMessage = false) {
                 if (update.scope && !aliasSet.has(update.scope)) return;
                 if (!update.scope || update.scope !== scopeKey) {
                     update.scope = scopeKey;
+                    scopeOwnershipCache?.delete(chat);
                     needsSave = true;
                 }
 

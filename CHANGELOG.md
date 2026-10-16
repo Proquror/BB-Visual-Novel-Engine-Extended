@@ -4,6 +4,12 @@
 
 ## Русский
 
+### Оптимизация проверки персоны — 17 октября 2026 (без изменения версии)
+
+- Фоновая проверка использует существующую привязку персоны без построения индекса всей истории. Резервный опрос выполняется раз в 2,5 секунды; события SillyTavern обрабатываются сразу.
+- Внутри одного синхронного расчёта повторные обращения используют общий индекс принадлежности записей. После операции кэш освобождается; правки записей внутри расчёта сбрасывают его.
+- Убраны дублирующие пересчёты при готовности приложения и смене чата. Сохранены проверки смены персоны, свайпов, веток и snapshot; баллы и правила отношений не изменены.
+
 ### Добавление контактов и статусы отношений — 16 октября 2026 (без изменения версии)
 
 - Уточнены инструкции модели: именованный персонаж при прямом взаимодействии добавляется в трекер даже без изменения отношений, в том числе если он появился в истории раньше. Нейтральный контакт не начисляет баллы доверия или влечения.
@@ -98,6 +104,12 @@
 Источник: [78557dc](https://github.com/maxkara14/BB-Visual-Novel-Engine/commit/78557dc), включая версию в manifest. Более ранняя история здесь не реконструирована.
 
 ## English
+
+### Persona check optimization — October 17, 2026 (no version change)
+
+- Background checks reuse an existing persona binding without indexing the entire history. Fallback polling runs every 2.5 seconds; SillyTavern events are handled immediately.
+- Repeated lookups within one synchronous calculation share a scope ownership index. The cache is released after the operation and invalidated when records change during calculation.
+- Removed duplicate recalculations on application readiness and chat changes. Persona, swipe, branch and snapshot safeguards remain covered; relationship scores and rules are unchanged.
 
 ### Contact discovery and relationship labels — October 16, 2026 (no version change)
 

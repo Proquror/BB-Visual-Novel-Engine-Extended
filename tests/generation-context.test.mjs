@@ -23,6 +23,8 @@ async function harness({ custom = false, boot = false, fakeClock = false } = {})
     let timerId = 0;
     let saves = 0;
     let stops = 0;
+    let recalculations = 0;
+    const intervals = [];
     let loading = false;
     let persona = 'persona-a';
     const ready = [];
@@ -73,7 +75,7 @@ async function harness({ custom = false, boot = false, fakeClock = false } = {})
         HTMLTextAreaElement: class {},
         document: { getElementById: () => null, querySelector: () => null, createElement: createNode },
         CustomEvent: class { constructor(type, init = {}) { this.type = type; this.detail = init.detail; } },
-        window: { addEventListener: (name, callback) => browserListeners.set(name, callback), dispatchEvent: event => {events.push(event); browserListeners.get(event.type)?.(event);}, setInterval: () => 1, renderVNOptionsFromData: (data, open) => {
+        window: { addEventListener: (name, callback) => browserListeners.set(name, callback), dispatchEvent: event => {events.push(event); browserListeners.get(event.type)?.(event);}, setInterval: (callback, delay) => { intervals.push({callback, delay}); return 1; }, renderVNOptionsFromData: (data, open) => {
             rendered.push({ data, open }); loading = false;
         } },
         fetch: (_url, init) => { const pending = request('custom', init.signal); calls.at(-1).body = JSON.parse(init.body); return pending; },
@@ -98,7 +100,7 @@ async function harness({ custom = false, boot = false, fakeClock = false } = {})
         ['../../../../extensions.js', { extension_settings: settings }],
         ['./social.js', {
             injectCombinedSocialPrompt() {}, getCurrentPersonaScopeKey: () => persona,
-            recalculateAllStats() {}, setRenderHudCallback() {}, getCombinedSocial: () => '',
+            recalculateAllStats() { recalculations++; }, setRenderHudCallback() {}, getCombinedSocial: () => '',
             queueSnapshotReplayForGeneratedSwipe() {},
         }],
         ['./hud.js', {
@@ -152,7 +154,8 @@ async function harness({ custom = false, boot = false, fakeClock = false } = {})
     }
     const state = cache.get('./state.js').namespace;
     return {
-        sandbox, document: sandbox.document, window: sandbox.window, api: generator.namespace, state, context, calls, rendered, errors, settings, events, logs, profileState, createNode,
+        sandbox, document: sandbox.document, window: sandbox.window, api: generator.namespace, state, context, calls, rendered, errors, settings, events, logs, profileState, createNode, intervals,
+        get recalculations() { return recalculations; },
         connections: cache.get('./connections.js').namespace,
         async loadApi(name) {
             const module = await load(name);
@@ -180,6 +183,36 @@ async function harness({ custom = false, boot = false, fakeClock = false } = {})
         },
     };
 }
+
+test('chat readiness and switching recalculate once, including in a hidden tab', async () => {
+    const h = await harness({boot: true});
+    for (const hidden of [false, true]) {
+        h.document.hidden = hidden;
+        for (const event of ['APP_READY', 'CHAT_CHANGED']) {
+            const before = h.recalculations;
+            await h.emit(event);
+            assert.equal(h.recalculations - before, 1);
+        }
+    }
+});
+
+test('fallback persona polling is slower, skips unchanged state and pauses in a hidden tab', async () => {
+    const h = await harness({boot: true});
+    assert.equal(h.intervals.length, 1);
+    const poll = h.intervals[0];
+    assert.equal(poll.delay, 2500);
+    const before = h.recalculations;
+    poll.callback(); assert.equal(h.recalculations, before);
+    h.setPersona('another-persona');
+    h.document.hidden = true;
+    poll.callback(); assert.equal(h.recalculations, before);
+    h.document.hidden = false;
+    poll.callback(); assert.equal(h.recalculations, before + 1);
+    poll.callback(); assert.equal(h.recalculations, before + 1);
+    h.setPersona('third-persona');
+    await h.emit('PERSONA_CHANGED');
+    assert.equal(h.recalculations, before + 2);
+});
 
 test('valid result is saved to its original swipe and displayed', async () => {
     const h = await harness();
