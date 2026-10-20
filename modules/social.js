@@ -39,12 +39,17 @@ function saveChatDebounced() {
 }
 
 function normalizeCharacterLookupName(name = '') {
-    return String(name || '')
+    const source = String(name || '');
+    const cache = getOperationValueCache(normalizeCharacterLookupName);
+    if (cache?.has(source)) return cache.get(source);
+    const normalized = source
         .toLowerCase()
         .normalize('NFKC')
         .replace(/[^\p{L}\p{N}\s]/gu, ' ')
         .replace(/\s+/g, ' ')
         .trim();
+    cache?.set(source, normalized);
+    return normalized;
 }
 
 function hashString(input = '') {
@@ -396,6 +401,14 @@ function getUserCharacterNameCandidates() {
 function isUserPersonaCharacterName(rawName = '') {
     const normalized = normalizeCharacterLookupName(rawName);
     if (!normalized) return false;
+    if (scopeOwnershipCache) {
+        let candidates = scopeOwnershipCache.get(getUserCharacterNameCandidates);
+        if (!candidates) {
+            candidates = new Set(getUserCharacterNameCandidates().map(normalizeCharacterLookupName));
+            scopeOwnershipCache.set(getUserCharacterNameCandidates, candidates);
+        }
+        return candidates.has(normalized);
+    }
     return getUserCharacterNameCandidates().some(candidate => normalizeCharacterLookupName(candidate) === normalized);
 }
 
@@ -514,6 +527,18 @@ function collectMessageScopeKeys(msg = null) {
 // Share history scans only during one synchronous operation. Edits, swipes and
 // branch changes in subsequent operations always see a freshly built index.
 let scopeOwnershipCache = null;
+
+// Pure string results use their complete input as the key. The outer operation
+// releases these maps together with the ownership index, including on failure.
+function getOperationValueCache(key) {
+    if (!scopeOwnershipCache) return null;
+    let cache = scopeOwnershipCache.get(key);
+    if (!cache) {
+        cache = new Map();
+        scopeOwnershipCache.set(key, cache);
+    }
+    return cache;
+}
 
 function withScopeOwnershipCache(operation) {
     if (scopeOwnershipCache) return operation();
@@ -2091,12 +2116,17 @@ export function mergeCharacterRecords(fromName = '', toName = '') {
 
 
 function stripHiddenSocialDataFromText(text = '') {
-    return String(text || '')
+    const source = String(text || '');
+    const cache = getOperationValueCache(stripHiddenSocialDataFromText);
+    if (cache?.has(source)) return cache.get(source);
+    const stripped = source
         .replace(/<div[^>]*(?:class=["'][^"']*bb-vn-data[^"']*["']|style=["'][^"']*display\s*:\s*none[^"']*["'])[^>]*>[\s\S]*?<\/div>/gi, ' ')
         .replace(/<bb-social-updates\b[^>]*>[\s\S]*?<\/bb-social-updates>/gi, ' ')
         .replace(/<[^>]+>/g, ' ')
         .replace(/\s+/g, ' ')
         .trim();
+    cache?.set(source, stripped);
+    return stripped;
 }
 
 function getCanonicalCharacterNameWithoutMutation(rawName = '', scopeState = {}) {

@@ -6,7 +6,7 @@ import { SourceTextModule, SyntheticModule, createContext } from 'node:vm';
 const root = new URL('../modules/', import.meta.url);
 async function harness() {
     let saves = 0;
-    const audit = { scans: 0, pairs: 0 };
+    const audit = { scans: 0, pairs: 0, personaCandidates: 0, normalizations: 0, strips: 0 };
     const metadata = {};
     const context = { chat: [], chatId: 'test', name1: 'Player', user_avatar: 'player.png' };
     context.substituteParams = text => text.replaceAll('{{user}}', context.name1);
@@ -26,7 +26,12 @@ async function harness() {
         const source = values ? '' : readFileSync(new URL(name, root), 'utf8');
         const instrumented = name === './social.js' ? source
             .replace('function buildScopeOwnershipIndex(chat = []) {', 'function buildScopeOwnershipIndex(chat = []) { audit.scans++;')
-            .replace('const score = scoreCharacterMatch(left.primary_name, right.primary_name);', 'audit.pairs++; const score = scoreCharacterMatch(left.primary_name, right.primary_name);') : source;
+            .replace('const score = scoreCharacterMatch(left.primary_name, right.primary_name);', 'audit.pairs++; const score = scoreCharacterMatch(left.primary_name, right.primary_name);')
+            .replace('function getUserCharacterNameCandidates() {', 'function getUserCharacterNameCandidates() { audit.personaCandidates++;')
+            .replace(/const normalized = source\r?\n/, 'audit.normalizations++; const normalized = source\n')
+            .replace(/const stripped = source\r?\n/, 'audit.strips++; const stripped = source\n')
+            + '\nexport const auditOperation = withScopeOwnershipCache; export const auditUserName = isUserPersonaCharacterName; export const auditReference = textContainsCharacterReference;'
+            : source;
         const module = values
             ? new SyntheticModule(Object.keys(values), function() { for (const [key, value] of Object.entries(values)) this.setExport(key, value); }, { context: sandbox })
             : new SourceTextModule(instrumented, { context: sandbox, identifier: name });
@@ -205,4 +210,57 @@ test('coalesced real calculations preserve scores, memories and the full prompt 
     assert.equal(calculations, 2);
     assert.equal(queued.state.currentCalculatedStats.Alex.affinity, direct.state.currentCalculatedStats.Alex.affinity);
     assert.equal(JSON.stringify(queued.state.currentCalculatedStats.Alex.memories), JSON.stringify(direct.state.currentCalculatedStats.Alex.memories));
+});
+
+test('scene scans reuse cleaned text across characters only inside the current operation', async () => {
+    const h = await harness(), scope = fillRegistry(h);
+    const text = '<div class="bb-vn-data">Cyrus</div>Alex greets Beatrice.';
+    h.audit.strips = 0;
+    h.api.auditOperation(() => {
+        assert.equal(h.api.auditReference(text, 'Alex', scope), true);
+        const normalizations = h.audit.normalizations;
+        assert.equal(h.api.auditReference(text, 'Alex', scope), true);
+        assert.equal(h.audit.normalizations, normalizations, 'repeated lookups reuse string normalization');
+        assert.equal(h.api.auditReference(text, 'Beatrice', scope), true);
+        assert.equal(h.api.auditReference(text, 'Cyrus', scope), false);
+        assert.equal(h.audit.strips, 1);
+        assert.equal(h.api.auditReference(text.replace('Alex', 'Dora'), 'Alex', scope), false);
+        assert.equal(h.audit.strips, 2, 'same-length edits use the complete new text');
+    });
+    h.api.auditOperation(() => h.api.auditReference(text, 'Alex', scope));
+    assert.equal(h.audit.strips, 3, 'a subsequent operation rebuilds the text cache');
+});
+
+test('persona candidate names are computed once per operation and refresh after persona edits', async () => {
+    const h = await harness();
+    let personaText = 'Name: Alice';
+    h.context.substituteParams = text => text.replaceAll('{{user}}', h.context.name1).replaceAll('{{persona}}', personaText);
+    h.audit.personaCandidates = 0;
+    h.api.auditOperation(() => {
+        for (let i = 0; i < 100; i++) {
+            assert.equal(h.api.auditUserName('ＡＬＩＣＥ'), true);
+            assert.equal(h.api.auditUserName('Cyrus'), false);
+        }
+    });
+    assert.equal(h.audit.personaCandidates, 1);
+    personaText = 'Name: Cyrus';
+    h.api.auditOperation(() => {
+        assert.equal(h.api.auditUserName('Alice'), false);
+        assert.equal(h.api.auditUserName('Cyrus'), true);
+    });
+    assert.equal(h.audit.personaCandidates, 2);
+    h.context.name1 = 'Other player';
+    h.api.auditOperation(() => assert.equal(h.api.auditUserName('Other player'), true));
+    assert.equal(h.audit.personaCandidates, 3);
+});
+
+test('failed operations release persona and normalized-text caches', async () => {
+    const h = await harness(), scope = fillRegistry(h);
+    const run = () => h.api.auditOperation(() => {
+        h.api.auditUserName('Player'); h.api.auditReference('Alex speaks.', 'Alex', scope);
+        throw new Error('operation failed');
+    });
+    h.audit.personaCandidates = 0; h.audit.strips = 0;
+    assert.throws(run, /operation failed/); assert.throws(run, /operation failed/);
+    assert.equal(h.audit.personaCandidates, 2); assert.equal(h.audit.strips, 2);
 });

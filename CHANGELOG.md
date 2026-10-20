@@ -4,6 +4,13 @@
 
 ## Русский
 
+### Повторная обработка имён и текста сцены — 20 октября 2026 (без изменения версии)
+
+- Во время одного синхронного пересчёта имена пользовательской персоны собираются один раз. Проверки большого списка персонажей больше не разбирают описание персоны заново для каждого имени.
+- Очистка скрытых блоков и нормализация строк переиспользуют результат для полного исходного текста внутри текущей операции. Поиск упоминаний разных персонажей больше не обрабатывает один и тот же текст сцены многократно.
+- Кэш освобождается после операции, включая ошибки. Следующий пересчёт видит изменения персоны, текста, свайпов и чата; строки одинаковой длины с разным содержимым проверяются отдельно.
+- Добавлены регрессионные проверки переиспользования результатов, правок одинаковой длины, смены персоны и освобождения кэша после ошибки.
+
 ### Меньше повторных расчётов и скрытых редакторов — 20 октября 2026 (без изменения версии)
 
 - Попарное сравнение похожих имён повторяется при изменении реестра или подсказок объединения. Обычные обращения к профилям и изменение аватара не запускают сравнение заново; кэш разделён по состояниям персон. Покрытие реестра учитывает имена и алиасы за один проход.
@@ -118,6 +125,13 @@
 Источник: [78557dc](https://github.com/maxkara14/BB-Visual-Novel-Engine/commit/78557dc), включая версию в manifest. Более ранняя история здесь не реконструирована.
 
 ## English
+
+### Repeated persona and scene text processing — October 20, 2026 (no version change)
+
+- User persona names are collected once within each synchronous calculation. Checking a large character roster no longer reparses the persona description for every name.
+- Hidden-block removal and string normalization reuse results keyed by the complete input within the current operation. Looking for different character mentions no longer processes the same scene text repeatedly.
+- Caches are released after each operation, including failures. Subsequent calculations see persona, text, swipe and chat changes; different strings of equal length are checked separately.
+- Added regression checks for reuse, same-length edits, persona changes and cache release after failures.
 
 ### Fewer repeated calculations and hidden editors — October 20, 2026 (no version change)
 
