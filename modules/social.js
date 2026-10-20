@@ -1084,18 +1084,34 @@ function getKnownCharacterNames(scopeState = {}) {
 
 function ensureRegistryCoverage(scopeState = {}) {
     let changed = false;
+    const ownedNames = new Set(getRegistryEntries(scopeState).flatMap(entry =>
+        [entry.primary_name, ...(Array.isArray(entry.aliases) ? entry.aliases : [])].map(normalizeCharacterLookupName).filter(Boolean)));
     getKnownCharacterNames(scopeState).forEach(name => {
-        const hasEntry = getRegistryEntries(scopeState).some(entry => entryOwnsName(entry, name));
-        if (hasEntry) return;
+        const normalized = normalizeCharacterLookupName(name);
+        if (ownedNames.has(normalized)) return;
         createCharacterRegistryEntry(scopeState, name);
+        ownedNames.add(normalized);
         changed = true;
     });
     return changed;
 }
 
+// Scope-local and image-free: repeated profile reads must not compare every pair.
+// Include suggestion contents so imports, removals and in-place edits refresh it.
+const mergeSeedCache = new WeakMap();
+function mergeSeedSignature(entries, suggestions) {
+    return JSON.stringify([
+        entries.map(entry => [entry.id, entry.primary_name, entry.created_at]),
+        (suggestions || []).map(item => [item.source, item.target]),
+    ]);
+}
+
 function seedMergeSuggestionsFromRegistry(scopeState = {}) {
     const entries = getRegistryEntries(scopeState);
     if (entries.length < 2) return false;
+    const signature = mergeSeedSignature(entries, scopeState.merge_suggestions);
+    if (mergeSeedCache.get(scopeState) === signature) return false;
+    mergeSeedCache.set(scopeState, signature);
 
     let changed = false;
     for (let leftIndex = 0; leftIndex < entries.length; leftIndex++) {
@@ -1127,6 +1143,7 @@ function seedMergeSuggestionsFromRegistry(scopeState = {}) {
         }
     }
 
+    mergeSeedCache.set(scopeState, mergeSeedSignature(entries, scopeState.merge_suggestions));
     return changed;
 }
 
@@ -2280,6 +2297,7 @@ function filterStaleSceneUpdates(activeUpdates = [], msg = null, idx = -1, chat 
 }
 
 export function getCombinedSocial() {
+    if (!calculatingStats) flushPendingSocialUpdates();
     return withScopeOwnershipCache(buildCombinedSocial);
 }
 
@@ -2754,6 +2772,9 @@ export function scanAndCleanMessage(msg, messageId, trackDebug = false) {
 
 let renderHudCallback = () => {};
 export function setRenderHudCallback(cb) { renderHudCallback = cb; }
+let flushPendingSocialUpdates = () => {};
+let calculatingStats = false;
+export function setSocialPromptFlushCallback(callback) { flushPendingSocialUpdates = callback; }
 
 export async function handleNewCharacterInterviews(chars) {
     bindActivePersonaState();
@@ -2779,7 +2800,13 @@ export async function handleNewCharacterInterviews(chars) {
 }
 
 export function recalculateAllStats(isNewMessage = false) {
-    return withScopeOwnershipCache(() => recalculateAllStatsNow(isNewMessage));
+    const wasCalculating = calculatingStats;
+    calculatingStats = true;
+    try {
+        return withScopeOwnershipCache(() => recalculateAllStatsNow(isNewMessage));
+    } finally {
+        calculatingStats = wasCalculating;
+    }
 }
 
 function recalculateAllStatsNow(isNewMessage = false) {

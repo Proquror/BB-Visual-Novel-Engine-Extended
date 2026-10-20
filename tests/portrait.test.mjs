@@ -80,7 +80,7 @@ async function harness({ fetch: fetchImpl, fakeClock = false, uploadFails = fals
         expire: () => [...timers.values()].forEach(callback => callback()),
         button: text => nodes().find(n => n.tagName === 'button' && n.textContent === text),
         prompt: () => nodes().find(n => n.tagName === 'textarea'),
-        open() { module.namespace.openPortraitWorkshop({ charName: '<Alex>', description: 'Unsaved hair', avatar: png, isEditorCurrent: () => editorCurrent, apply: value => applied.push(value) }); },
+        open(avatar = png) { module.namespace.openPortraitWorkshop({ charName: '<Alex>', description: 'Unsaved hair', avatar, isEditorCurrent: () => editorCurrent, apply: value => applied.push(value) }); },
         close() { nodes().find(n => n.tagName === 'dialog')?.emit('cancel'); },
         mountSettings() { const root = new Node('div'); body.append(root); module.namespace.mountPortraitSettings(root); return root; },
     };
@@ -424,6 +424,24 @@ test('workshop manual generation previews without a text request and applies onl
         h.button('Использовать').click();
         assert.deepEqual(h.applied,[png]);
     } finally { h.close(); }
+});
+
+test('a file-backed current avatar becomes a real image reference, including context checks', async () => {
+    for (const stale of [false, true]) {
+        let h;
+        h = await harness({ fetch: async () => {
+            if (stale) h.setPersona('changed');
+            return { ok: true, blob: async () => new Blob([Buffer.from(png.split(',')[1], 'base64')], { type: 'image/png' }) };
+        } });
+        h.open('/user/images/bb_vne_assets/vne_saved.png');
+        try {
+            await h.button('Текущий аватар').click();
+            const refs = h.nodes().filter(node => node.className === 'bb-portrait-ref');
+            assert.equal(refs.length, stale ? 0 : 1);
+            if (!stale) assert.equal(refs[0].children.find(node => node.tagName === 'img').src, png);
+            assert.equal(h.requests.length, 1); assert.equal(h.textRequests.length, 0);
+        } finally { h.close(); }
+    }
 });
 
 test('build prompt uses editor draft without generating an image', async () => {

@@ -24,6 +24,8 @@ async function harness({ custom = false, boot = false, fakeClock = false } = {})
     let saves = 0;
     let stops = 0;
     let recalculations = 0;
+    const recalculationFlags = [];
+    let flushSocialPrompt = () => {};
     const intervals = [];
     let loading = false;
     let persona = 'persona-a';
@@ -54,6 +56,7 @@ async function harness({ custom = false, boot = false, fakeClock = false } = {})
         event_types: Object.fromEntries([
             'APP_READY', 'CHAT_CHANGED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_DELETED',
             'MESSAGE_SWIPED', 'MESSAGE_UPDATED', 'GENERATION_STOPPED', 'GENERATE_AFTER_DATA', 'PERSONA_CHANGED',
+            'GENERATION_STARTED', 'GENERATION_ENDED', 'CHARACTER_MESSAGE_RENDERED',
         ].map(name => [name, name])),
         eventSource: { on: (event, handler) => {
             handlers.set(event, [...(handlers.get(event) || []), handler]);
@@ -100,7 +103,8 @@ async function harness({ custom = false, boot = false, fakeClock = false } = {})
         ['../../../../extensions.js', { extension_settings: settings }],
         ['./social.js', {
             injectCombinedSocialPrompt() {}, getCurrentPersonaScopeKey: () => persona,
-            recalculateAllStats() { recalculations++; }, setRenderHudCallback() {}, getCombinedSocial: () => '',
+            recalculateAllStats(isNew) { recalculations++; recalculationFlags.push(Boolean(isNew)); }, setRenderHudCallback() {},
+            setSocialPromptFlushCallback(callback) { flushSocialPrompt = callback; }, getCombinedSocial: () => { flushSocialPrompt(); return ''; },
             queueSnapshotReplayForGeneratedSwipe() {},
         }],
         ['./hud.js', {
@@ -155,7 +159,7 @@ async function harness({ custom = false, boot = false, fakeClock = false } = {})
     const state = cache.get('./state.js').namespace;
     return {
         sandbox, document: sandbox.document, window: sandbox.window, api: generator.namespace, state, context, calls, rendered, errors, settings, events, logs, profileState, createNode, intervals,
-        get recalculations() { return recalculations; },
+        get recalculations() { return recalculations; }, recalculationFlags,
         connections: cache.get('./connections.js').namespace,
         async loadApi(name) {
             const module = await load(name);
@@ -194,6 +198,42 @@ test('chat readiness and switching recalculate once, including in a hidden tab',
             assert.equal(h.recalculations - before, 1);
         }
     }
+});
+
+test('actual response event hooks coalesce received, rendered and generation ended', async () => {
+    const h = await harness({ boot: true, fakeClock: true }), before = h.recalculations;
+    await h.emit('MESSAGE_RECEIVED'); await h.emit('CHARACTER_MESSAGE_RENDERED'); await h.emit('GENERATION_ENDED');
+    assert.equal(h.recalculations, before);
+    h.expire(); assert.equal(h.recalculations, before + 1); assert.equal(h.recalculationFlags.at(-1), true);
+    h.expire(); assert.equal(h.recalculations, before + 1);
+});
+
+test('actual edit, swipe, delete and context hooks supersede pending response calculations', async () => {
+    for (const event of ['MESSAGE_UPDATED', 'MESSAGE_SWIPED', 'MESSAGE_DELETED', 'CHAT_CHANGED', 'PERSONA_CHANGED']) {
+        const h = await harness({ boot: true, fakeClock: true }), before = h.recalculations;
+        await h.emit('MESSAGE_RECEIVED');
+        if (event === 'CHAT_CHANGED') h.context.chatId = 'b';
+        if (event === 'PERSONA_CHANGED') h.setPersona('b');
+        await h.emit(event);
+        assert.equal(h.recalculations, before + 1);
+        h.expire(); assert.equal(h.recalculations, before + 1);
+    }
+});
+
+test('actual prompt preparation hooks flush pending relationship updates before continuing', async () => {
+    for (const event of ['GENERATION_STARTED', 'GENERATE_AFTER_DATA', 'MESSAGE_SENT']) {
+        const h = await harness({ boot: true, fakeClock: true }), before = h.recalculations;
+        await h.emit('MESSAGE_RECEIVED'); await h.emit(event);
+        assert.equal(h.recalculations, before + 1); assert.equal(h.recalculationFlags.at(-1), true);
+        h.expire(); assert.equal(h.recalculations, before + 1);
+    }
+});
+
+test('direct social prompt reads flush pending work for Custom API and external callers', async () => {
+    const h = await harness({ boot: true, fakeClock: true }), before = h.recalculations;
+    await h.emit('MESSAGE_RECEIVED'); h.window.getCombinedSocial();
+    assert.equal(h.recalculations, before + 1);
+    h.expire(); assert.equal(h.recalculations, before + 1);
 });
 
 test('fallback persona polling is slower, skips unchanged state and pauses in a hidden tab', async () => {

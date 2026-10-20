@@ -1,6 +1,7 @@
 import { MODULE_NAME } from './constants.js';
 
-export const MAX_SNAPSHOT_BYTES = 20 * 1024 * 1024;
+// Portable exports include image originals; keep a bounded allowance for them.
+export const MAX_SNAPSHOT_BYTES = 100 * 1024 * 1024;
 const own = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const fail = (code = 'INVALID_SNAPSHOT') => { throw new Error(code); };

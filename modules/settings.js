@@ -15,7 +15,8 @@ import { normalizeRequestTimeout, normalizeCustomApiMaxTokens, normalizeRequestE
 import { escapeHtml, createTextOption } from './utils.js';
 import { resolveVnGenerationSource } from './connections.js';
 import { normalizeOutputLanguage } from './language.js';
-import { confirmSnapshotFile, confirmSnapshotRemoval } from './snapshot.js';
+import { confirmSnapshotFile, confirmSnapshotRemoval, parseSnapshot } from './snapshot.js';
+import { captureImageContext, createImageStore, imageMetadataRoots, collectInlineImages, externalizeImages, embedSnapshotImages } from './image-storage.js';
 import { removeSnapshotRecord, undoSnapshotRecordRemoval } from './snapshot-records.js';
 import { changeMemoryEntry } from './memory-editor.js';
 import { changeRelationshipEvent } from './relationship-event-editor.js';
@@ -97,7 +98,7 @@ function makeSnapshotFilename() {
 }
 
 function downloadSnapshotFile(snapshot) {
-    const json = JSON.stringify(snapshot, null, 2);
+    const json = JSON.stringify(snapshot);
     const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -107,6 +108,17 @@ function downloadSnapshotFile(snapshot) {
     link.click();
     document.body.removeChild(link);
     window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function downloadImageMigrationBackup(context) {
+    // Tavern's standard JSONL header + all messages: importable as a separate chat.
+    const header = { chat_metadata: context.chatMetadata, user_name: 'unused', character_name: 'unused' };
+    const blob = new Blob([[header, ...context.chat].map(row => JSON.stringify(row)).join('\n')], { type: 'application/jsonl' });
+    const url = URL.createObjectURL(blob), link = document.createElement('a');
+    link.href = url;
+    link.download = 'bb-vne-before-image-storage-' + Date.now() + '.jsonl';
+    document.body.appendChild(link); link.click(); link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 60000);
 }
 
 export function injectDebugData(impact, isRomance = false) {
@@ -391,6 +403,8 @@ export function setupExtensionSettings() {
                                 <button id="bb-social-import-btn" class="menu_button bb-vn-settings-button"><i class="fa-solid fa-file-import" aria-hidden="true"></i><span>Импорт</span></button>
                             </div>
                             <button id="bb-social-clear-snapshot-btn" class="menu_button bb-vn-settings-button" style="color:#fda4af; border-color:rgba(244,114,182,0.22);">Убрать импортированную основу</button>
+                            <button id="bb-social-store-images-btn" class="menu_button bb-vn-settings-button">Перенести изображения из чата в файлы</button>
+                            <span class="bb-vn-settings-note">Уменьшает данные чата, сохраняя картинки на сервере Таверны. Перед переносом скачивается резервная копия чата. Для переноса между серверами используйте экспорт snapshot.</span>
                         </div>
                         <details id="bb-social-snapshot-records" class="bb-vn-snapshot-editor">
                             <summary><i class="fa-solid fa-list-check" aria-hidden="true"></i><span>Редактор отношений</span><i class="fa-solid fa-chevron-down bb-vn-snapshot-editor-chevron" aria-hidden="true"></i></summary>
@@ -911,13 +925,55 @@ export function setupExtensionSettings() {
         showHudToast(sample);
     });
 
-    jQuery('#bb-social-export-btn').on('click', () => {
-        bindActivePersonaState();
-        recalculateAllStats(false);
-        const snapshot = exportActivePersonaSnapshot();
-        downloadSnapshotFile(snapshot);
-        const characterCount = Object.keys(snapshot?.data?.characters || {}).length;
-        notifySuccess(ui`Snapshot экспортирован: ${characterCount} персонажей.`);
+    jQuery('#bb-social-store-images-btn').on('click', async function() {
+        if (this.disabled) return;
+        this.disabled = true;
+        try {
+            bindActivePersonaState();
+            const context = SillyTavern.getContext();
+            const assertCurrent = captureImageContext(() => SillyTavern.getContext(), getCurrentPersonaScopeKey);
+            assertCurrent();
+            const getRoot = () => imageMetadataRoots(context.chatMetadata);
+            const images = new Set(collectInlineImages(getRoot()).map(slot => slot.value));
+            if (!images.size) return notifyInfo(t('Встроенных изображений для переноса нет.'));
+            const size = ([...images].reduce((sum, value) => sum + value.length, 0) / 1024 / 1024).toFixed(1);
+            const confirmed = await context.callPopup(ui`<h3>Перенос изображений</h3>
+                <p>Уникальных картинок: ${images.size}. Объём встроенных данных: ${size} МиБ.</p>
+                <p>Сначала скачается полная резервная копия чата в формате JSONL. Сохраните её: для отката её можно импортировать в Таверну как отдельный чат.</p>
+                <p>Изображения всех персон и сохранённых веток этого чата будут записаны в user/images/bb_vne_assets на текущем сервере. Исходные байты сохраняются без дополнительного сжатия. Сообщения и отношения не изменятся.</p>
+                <p>Ссылки заменятся только после проверки всех файлов. Не переключайте чат и дождитесь завершения. Файлы остаются на сервере; при переносе Таверны сохраняйте также папку images либо используйте экспорт snapshot.</p>
+                <p>Скачать резервную копию и начать перенос?</p>`, 'confirm');
+            if (confirmed !== true) return;
+            assertCurrent();
+            downloadImageMigrationBackup(context);
+            notifyInfo(t('Перенос изображений выполняется. Дождитесь завершения.'));
+            const result = await externalizeImages(getRoot(), createImageStore({ getRequestHeaders: () => context.getRequestHeaders(), assertCurrent }), { assertCurrent, getRoot });
+            saveChatDebounced();
+            recalculateAllStats(false);
+            notifySuccess(ui`Изображения перенесены в файлы: ${result.images}. Резервная копия чата скачана отдельно.`);
+        } catch (error) {
+            notifyError(t(error.message === 'IMAGE_CONTEXT_CHANGED'
+                ? 'Чат, персона или картинки изменились. Перенос отменён; повторите его в нужном чате.'
+                : 'Не удалось завершить перенос изображений. Сохраните резервную копию чата и повторите попытку.'));
+        } finally { this.disabled = false; }
+    });
+
+    jQuery('#bb-social-export-btn').on('click', async function() {
+        if (this.disabled) return;
+        this.disabled = true;
+        try {
+            bindActivePersonaState();
+            recalculateAllStats(false);
+            const assertCurrent = captureImageContext(() => SillyTavern.getContext(), getCurrentPersonaScopeKey);
+            const snapshot = await embedSnapshotImages(exportActivePersonaSnapshot());
+            assertCurrent();
+            parseSnapshot(snapshot);
+            downloadSnapshotFile(snapshot);
+            const characterCount = Object.keys(snapshot?.data?.characters || {}).length;
+            notifySuccess(ui`Snapshot экспортирован: ${characterCount} персонажей.`);
+        } catch {
+            notifyError(t('Не удалось экспортировать snapshot. Проверьте доступность файлов изображений и размер снимка (до 100 МиБ).'));
+        } finally { this.disabled = false; }
     });
 
     jQuery('#bb-social-import-btn').on('click', () => {
@@ -943,7 +999,13 @@ export function setupExtensionSettings() {
                     <p>Будут заменены текущая база отношений, память, черты, профили, скрытые и платонические персонажи, журнал и дневник активной персоны. Это замена, а не объединение.</p>
                     <p>Сообщения чата не меняются. Для возврата к состоянию до первого импорта используйте «Убрать импортированную основу». Старые события до точки импорта повторно не учитываются; новые события продолжают считаться.</p>
                     <p>Продолжить импорт?</p>`, 'confirm'),
-                apply: importActivePersonaSnapshot,
+                apply: async snapshot => {
+                    const context = SillyTavern.getContext();
+                    const assertCurrent = captureImageContext(() => SillyTavern.getContext(), getCurrentPersonaScopeKey);
+                    await externalizeImages(snapshot, createImageStore({ getRequestHeaders: () => context.getRequestHeaders(), assertCurrent }), { assertCurrent });
+                    assertCurrent();
+                    return importActivePersonaSnapshot(snapshot);
+                },
             });
             if (!result) return;
             refreshSnapshotControls(bindActivePersonaState().scopeState);
@@ -953,10 +1015,12 @@ export function setupExtensionSettings() {
         } catch (error) {
             console.error('[BB VN] Snapshot import failed.');
             const messages = {
-                SNAPSHOT_TOO_LARGE: 'Снимок слишком большой. Максимальный размер — 20 МиБ.',
+                SNAPSHOT_TOO_LARGE: 'Снимок слишком большой. Максимальный размер — 100 МиБ.',
                 SNAPSHOT_WRONG_MODULE: 'Этот снимок создан не Visual Novel Engine.',
                 SNAPSHOT_UNSUPPORTED_VERSION: 'Версия снимка не поддерживается. Импорт отменён.',
                 SNAPSHOT_CONTEXT_CHANGED: 'Чат или персона изменились во время импорта. Выберите файл заново.',
+                IMAGE_CONTEXT_CHANGED: 'Чат или персона изменились во время импорта. Выберите файл заново.',
+                IMAGE_STORAGE_FAILED: 'Не удалось сохранить изображения snapshot. Импорт не применён; повторите попытку.',
             };
             notifyError(t(messages[error.message] || 'Не удалось импортировать snapshot. Проверьте JSON-файл.'));
         } finally {

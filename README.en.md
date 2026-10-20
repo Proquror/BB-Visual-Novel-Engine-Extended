@@ -114,6 +114,10 @@ Interface language and the language of new replies are independent. Existing des
 
 Export saves the active persona's relationships, memories, traits, descriptions and avatars. Import **replaces the relationship baseline** instead of adding two sets together. Chat messages remain intact.
 
+New avatars and their sources are saved as separate files in `user/images/bb_vne_assets` on the Tavern server. Chat metadata holds short paths instead of embedded images. **Data → Move chat images to files** converts existing images across all personas and saved branch states in the current chat. Previously created separate chats are not rewritten. A full JSONL backup is downloaded first; import it as a separate chat to roll back. Every file is verified byte for byte before references change. Errors or context changes cancel the transfer; files already uploaded may remain on disk. PNG, JPEG, WebP, GIF and BMP up to 10 MiB per image are supported; an unsupported source cancels the entire transfer without changing embedded images.
+
+Snapshot export through settings includes avatars and sources, keeping JSON portable between servers (v1, up to 100 MiB). Import saves those images as files first. The exported JSON can still be large; it is not stored in the chat. When moving the entire Tavern installation or a regular JSONL chat, keep the `images` folder too. Image files are not automatically deleted.
+
 **Remove imported baseline** restores the baseline from before the first import and recalculates the current chat history. It does not roll back messages.
 
 A new branch receives relationship state at the selected message. Later imports and edits in the parent chat do not carry into an earlier branch. VNE warns when an older chat lacks the revision history needed to verify the exact state.

@@ -4,6 +4,20 @@
 
 ## Русский
 
+### Меньше повторных расчётов и скрытых редакторов — 20 октября 2026 (без изменения версии)
+
+- Попарное сравнение похожих имён повторяется при изменении реестра или подсказок объединения. Обычные обращения к профилям и изменение аватара не запускают сравнение заново; кэш разделён по состояниям персон. Покрытие реестра учитывает имена и алиасы за один проход.
+- Редактор персонажа создаётся при первом открытии карточки, а не для всех скрытых карточек при каждой отрисовке. Его кнопки, загрузка картинок и кадрирование работают через обработчики панели; закрытие и повторное открытие сохраняют черновик до следующей отрисовки HUD.
+- Уведомления о получении, отрисовке и завершении ответа объединяются в пределах 16 мс. Правки, удаления и свайпы пересчитываются сразу; смена чата или персоны отменяет старую задачу. Перед генерацией и прямым чтением социального промпта, включая Custom API, ожидающий расчёт выполняется немедленно.
+- Правила отношений, памяти и веток сохранены. Добавлены проверки обновления кэша, редакторов, событий и актуальности промпта.
+
+### Хранение аватаров вне чата — 20 октября 2026 (без изменения версии)
+
+- Новые аватары и исходники сохраняются файлами на сервере Таверны; в профилях и новых состояниях веток остаются короткие пути. Правка описания без смены картинки или кадрирования повторно не сохраняет аватар.
+- В «Данные» добавлен перенос встроенных изображений текущего чата, включая другие персоны и историю веток. Перед переносом скачивается полный JSONL-бэкап. Ссылки меняются вместе после побайтовой проверки всех файлов; ошибки, смена контекста и параллельные правки отменяют перенос.
+- Экспорт snapshot через настройки по-прежнему включает изображения для переноса между серверами; импорт сохраняет их файлами до применения. Лимит JSON увеличен до 100 МиБ, чтобы принимать крупные снимки с исходниками. Сохранены формат v1 и совместимость со встроенными картинками.
+- Расчёты отношений и обработка ответов не менялись. Добавлены проверки загрузки, отката при ошибке, резервной копии, сохранения карточки, истории веток и переносимости snapshot.
+
 ### Оптимизация проверки персоны — 17 октября 2026 (без изменения версии)
 
 - Фоновая проверка использует существующую привязку персоны без построения индекса всей истории. Резервный опрос выполняется раз в 2,5 секунды; события SillyTavern обрабатываются сразу.
@@ -104,6 +118,20 @@
 Источник: [78557dc](https://github.com/maxkara14/BB-Visual-Novel-Engine/commit/78557dc), включая версию в manifest. Более ранняя история здесь не реконструирована.
 
 ## English
+
+### Fewer repeated calculations and hidden editors — October 20, 2026 (no version change)
+
+- Similar-name pair comparisons repeat when the registry or merge suggestions change. Routine profile reads and avatar edits reuse the persona state's cache. Registry coverage checks names and aliases in one pass.
+- Character editors are created on first opening instead of building every hidden editor on each render. Buttons, image uploads and cropping use panel event handlers; closing and reopening preserves drafts until the next HUD render.
+- Response received, rendered and ended notifications are coalesced within 16 ms. Edits, deletions and swipes still recalculate immediately; chat or persona changes cancel stale work. Generation and direct social prompt reads, including Custom API, flush pending calculations synchronously.
+- Relationship, memory and branch rules remain unchanged. Added checks for cache refresh, editors, event handling and prompt freshness.
+
+### Store avatars outside chat metadata — October 20, 2026 (no version change)
+
+- New avatars and source images are stored as files on the Tavern server; profiles and new branch states hold short paths. Editing a description without changing the image or crop reuses the saved avatar.
+- Added a Data action to move embedded images in the current chat, including other personas and branch history. A full JSONL backup is downloaded first. References change together after byte-for-byte verification; errors, context changes and concurrent edits cancel the transfer.
+- Snapshot export through settings still embeds images for moving between servers; import stores them as files before applying. The JSON limit is now 100 MiB to accept large snapshots with originals. Preserved v1 format and compatibility with embedded images.
+- Relationship calculations and response processing are unchanged. Added checks for uploads, failure rollback, backups, card saving, branch history and portable snapshots.
 
 ### Persona check optimization — October 17, 2026 (no version change)
 

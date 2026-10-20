@@ -6,6 +6,7 @@ import { generatePortrait, fetchPortraitModels, PORTRAIT_DEFAULTS, readPortraitF
 import { generatePortraitPrompt } from './generator.js';
 import { getCurrentPersonaScopeKey } from './social.js';
 import { createPortraitGallery, downloadPortrait, copyPortrait } from './portrait-gallery.js';
+import { readManagedImage } from './image-storage.js';
 import { getImageParameterMode, getImageQualityOptions, GROK_ASPECT_RATIOS, IMAGE_ASPECT_RATIOS, normalizeImageParameterSettings } from './portrait-image-options.js';
 
 function settings() { return { ...PORTRAIT_DEFAULTS, ...extension_settings[MODULE_NAME].portrait }; }
@@ -376,7 +377,7 @@ export function openPortraitWorkshop({ charName, description, avatar, isEditorCu
     const file=node('input');file.type='file';file.accept='image/png,image/jpeg,image/webp';file.hidden=true;refsDetails.append(file);
     file.addEventListener('change',async()=>{try{if(file.files?.[0])await addReference(await readPortraitFile(file.files[0]));}catch(e){status.textContent=errorText(e);}finally{file.value='';}});
     const upload=button('Добавить референс',()=>file.click());refsDetails.append(upload);controls.push(upload);
-    const current=button('Текущий аватар',async()=>{try{await addReference(avatar);}catch(e){status.textContent=errorText(e);}});current.disabled=!avatar;refsDetails.append(current);
+    const current=button('Текущий аватар',async()=>{try{await addReference(await readManagedImage(avatar));}catch(e){status.textContent=errorText(e);}});current.disabled=!avatar;refsDetails.append(current);
     const build=button('Собрать промпт',()=>run('prompt'));const generate=button('Сгенерировать портрет',()=>run('image'));
     const cancel=button('Отмена',()=>controller?.abort());cancel.disabled=true;
     const use=button('Использовать',()=>{
