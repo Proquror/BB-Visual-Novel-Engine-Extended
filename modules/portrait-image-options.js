@@ -52,12 +52,18 @@ export function buildImageRequestOptions(settings, panel = {}) {
         const [widthRatio, heightRatio] = String(aspectRatio === 'auto' ? '1:1' : aspectRatio).split(':').map(Number);
         if (!edge || !(widthRatio > 0 && heightRatio > 0)) throw new Error('Некорректное разрешение или пропорции GPT Image.');
         let scale = Math.max(edge / Math.max(widthRatio, heightRatio), Math.sqrt(655360 / (widthRatio * heightRatio)));
+        scale = Math.min(scale, Math.sqrt(8294400 / (widthRatio * heightRatio)));
         let width = Math.round(widthRatio * scale / 16) * 16;
         let height = Math.round(heightRatio * scale / 16) * 16;
         if (width * height < 655360) {
             scale += 16 / Math.max(widthRatio, heightRatio);
             width = Math.round(widthRatio * scale / 16) * 16;
             height = Math.round(heightRatio * scale / 16) * 16;
+        }
+        // Rounding to the nearest 16 can exceed the pixel cap even after scaling.
+        if (width * height > 8294400) {
+            width = Math.floor(widthRatio * scale / 16) * 16;
+            height = Math.floor(heightRatio * scale / 16) * 16;
         }
         size = `${width}x${height}`;
     }

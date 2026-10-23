@@ -92,7 +92,7 @@ If appearance details are missing when building a prompt, complete them with AI 
 
 Images use a separate connection: **OpenAI Images, OpenAI Chat, Gemini or Naistera**, with model selection and saved profiles. Image generation and reference support depend on the service and model.
 
-Under **Images → Image parameters**, OpenAI Images offers explicit GPT Image or Grok modes, resolution, aspect ratio and quality; GPT supports optional exact dimensions, and the GPT Image 2.5 mode offers `xhigh` / `max`. Portraits default to square, and existing profiles retain compatible behavior. Profiles store these parameters; GPT sends reference files and Grok sends JSON. See the [portrait guide](docs/portraits.md) for details and size limits.
+Under **Images → Image parameters**, OpenAI Images offers explicit GPT Image or Grok modes, resolution, aspect ratio and quality; GPT supports optional exact dimensions, and the GPT Image 2.5 mode offers `xhigh` / `max`. Portraits default to square, and existing profiles retain compatible behavior. Automatic GPT dimensions respect the pixel cap: square 4K is 2880×2880, 3:4 is 2480×3312. Profiles store these parameters; GPT sends reference files and Grok sends JSON. See the [portrait guide](docs/portraits.md) for details and size limits.
 
 [Read the portrait guide →](docs/portraits.md#english)
 

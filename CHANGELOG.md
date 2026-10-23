@@ -4,6 +4,11 @@
 
 ## Русский
 
+### Автоматические размеры портретов GPT Image — 23 октября 2026 (без изменения версии)
+
+- Автоматический расчёт размера GPT Image 2/2.5 учитывает верхний лимит площади. Квадратный 4K и пропорции 3:4 больше не вызывают локальную ошибку: размер уменьшается с округлением сторон до кратности 16.
+- Точный размер остаётся без изменений и проверяется отдельно. Обновлены README и руководство портретов; добавлены проверки запросов генерации и редактирования с референсами.
+
 ### Повторная обработка имён и текста сцены — 20 октября 2026 (без изменения версии)
 
 - Во время одного синхронного пересчёта имена пользовательской персоны собираются один раз. Проверки большого списка персонажей больше не разбирают описание персоны заново для каждого имени.
@@ -125,6 +130,11 @@
 Источник: [78557dc](https://github.com/maxkara14/BB-Visual-Novel-Engine/commit/78557dc), включая версию в manifest. Более ранняя история здесь не реконструирована.
 
 ## English
+
+### Automatic GPT Image portrait dimensions — October 23, 2026 (no version change)
+
+- Automatic GPT Image 2/2.5 dimensions now respect the maximum pixel count. Square and 3:4 portraits using 4K no longer fail local size validation; dimensions are reduced and rounded to multiples of 16.
+- Explicit custom dimensions remain unchanged and are validated separately. Updated the READMEs and portrait guide, with regression checks for generation and reference-edit requests.
 
 ### Repeated persona and scene text processing — October 20, 2026 (no version change)
 

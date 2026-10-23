@@ -108,12 +108,37 @@ test('portrait model modes map size, ratio and quality without leaking into comp
         { parameterMode: 'gpt-image-2', quality: 'max' },
         { parameterMode: 'gpt-image', size: '1792x1024' },
         { parameterMode: 'gpt-image-2.5', customSize: '1025x1024' },
-        { parameterMode: 'gpt-image-2.5', imageSize: '4K' },
+        { parameterMode: 'gpt-image-2.5', customSize: '2496x3328', imageSize: '4K' },
         { parameterMode: 'grok', imageSize: '4K' },
         { parameterMode: 'grok', aspect: '4:5' },
         { parameterMode: 'grok', quality: 'high' },
     ]) await assert.rejects(h.api.generatePortrait({ ...connection, ...options }, 'Alex', []), /portrait_parameters/);
     assert.equal(h.requests.length, 0);
+});
+
+test('GPT 4K portrait sizes fit the pixel cap for square, portrait and landscape requests', async () => {
+    const h = await harness();
+    for (const parameterMode of ['gpt-image-2', 'gpt-image-2.5']) {
+        for (const [aspect, expected] of [['1:1', '2880x2880'], ['3:4', '2480x3312'], ['4:3', '3312x2480'], ['16:9', '3840x2160'], ['9:16', '2160x3840']]) {
+            for (const refs of [[], [{ dataUrl: png, role: 'appearance' }]]) {
+                const request = h.api.buildPortraitRequest({ ...connection, parameterMode, quality: 'high', imageSize: '4K', aspect }, 'Alex', refs);
+                const body = refs.length ? Object.fromEntries(request.init.body) : JSON.parse(request.init.body);
+                assert.equal(body.size, expected);
+                assert.equal(body.quality, 'high');
+                assert.equal(body.model, connection.model);
+                const [width, height] = body.size.split('x').map(Number);
+                assert.ok(width * height <= 8294400);
+                assert.equal(width % 16, 0);
+                assert.equal(height % 16, 0);
+                if (refs.length) {
+                    assert.match(request.url, /\/images\/edits$/);
+                    assert.equal(request.init.body.getAll('image').length, 1);
+                } else assert.match(request.url, /\/images\/generations$/);
+            }
+        }
+    }
+    await h.api.generatePortrait({ ...connection, parameterMode: 'gpt-image-2', imageSize: '4K', aspect: '1:1' }, 'Alex', []);
+    assert.equal(JSON.parse(h.requests[0].init.body).size, '2880x2880');
 });
 
 test('GPT edits retain options and every file; Grok edits retain every JSON reference and its role', async () => {
