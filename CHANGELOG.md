@@ -4,6 +4,13 @@
 
 ## Русский
 
+### Обновление трекера после нового ответа — 24 октября 2026 (без изменения версии)
+
+- Исправлен вызов несуществующего `markdownToHtml` после очистки служебного блока в видимом сообщении. Используется штатный `updateMessageBlock` Таверны.
+- Ошибка больше не обрывает пересчёт до обновления карточек и запроса начальных отношений для нового персонажа. Ранее данные могли обновиться, пока панель оставалась со старым списком.
+- Карточки и значения отношений обновляются после ответа без закрытия и повторного открытия панели. Исправление проверено пользователем на локальной Таверне.
+- Добавлены проверки полного пути для видимого и неотрисованного сообщения: очистка блока, сохранение обновлений, обновление панели и однократный запрос начальных отношений.
+
 ### Автоматические размеры портретов GPT Image — 23 октября 2026 (без изменения версии)
 
 - Автоматический расчёт размера GPT Image 2/2.5 учитывает верхний лимит площади. Квадратный 4K и пропорции 3:4 больше не вызывают локальную ошибку: размер уменьшается с округлением сторон до кратности 16.
@@ -130,6 +137,13 @@
 Источник: [78557dc](https://github.com/maxkara14/BB-Visual-Novel-Engine/commit/78557dc), включая версию в manifest. Более ранняя история здесь не реконструирована.
 
 ## English
+
+### Tracker updates after a new reply — October 24, 2026 (no version change)
+
+- Replaced the nonexistent `markdownToHtml` call used after cleaning a hidden block from a visible message with Tavern's native `updateMessageBlock`.
+- This error no longer interrupts calculation before refreshing character cards and asking for a new character's initial relationship. Previously, data could update while the panel retained its old roster.
+- Character cards and relationship values refresh after a reply without closing and reopening the panel. The reporter verified the fix in their local Tavern instance.
+- Added visible and non-rendered message regression checks covering block removal, stored updates, HUD refresh and a single initial relationship prompt.
 
 ### Automatic GPT Image portrait dimensions — October 23, 2026 (no version change)
 

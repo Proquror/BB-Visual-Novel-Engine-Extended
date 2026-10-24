@@ -2794,7 +2794,7 @@ export function scanAndCleanMessage(msg, messageId, trackDebug = false) {
     if (modified) scopeOwnershipCache?.delete(SillyTavern.getContext().chat);
     if (modified && messageId !== undefined) {
         const msgElement = document.querySelector(`.mes[mesid="${messageId}"] .mes_text`);
-        if (msgElement) msgElement.innerHTML = SillyTavern.getContext().markdownToHtml(msg.mes);
+        if (msgElement) SillyTavern.getContext().updateMessageBlock(messageId, msg);
     }
     
     return modified;

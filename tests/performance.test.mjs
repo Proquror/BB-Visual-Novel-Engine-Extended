@@ -4,16 +4,20 @@ import { test } from 'node:test';
 import { SourceTextModule, SyntheticModule, createContext } from 'node:vm';
 
 const root = new URL('../modules/', import.meta.url);
-async function harness() {
+async function harness({ renderedElement = null } = {}) {
     let saves = 0;
-    const audit = { scans: 0, pairs: 0, personaCandidates: 0, normalizations: 0, strips: 0 };
+    const audit = { scans: 0, pairs: 0, personaCandidates: 0, normalizations: 0, strips: 0, messageRenders: [], interviews: [] };
     const metadata = {};
     const context = { chat: [], chatId: 'test', name1: 'Player', user_avatar: 'player.png' };
     context.substituteParams = text => text.replaceAll('{{user}}', context.name1);
+    context.updateMessageBlock = (id, message) => {
+        audit.messageRenders.push({ id, text: message.mes });
+        if (renderedElement) renderedElement.innerHTML = `Formatted: ${message.mes}`;
+    };
     const sandbox = createContext({ audit, Event, TextEncoder, console, setTimeout, clearTimeout,
-        SillyTavern: { getContext: () => context }, window: {}, document: { querySelector: () => null }, jQuery: () => ({ val: () => null }) });
+        SillyTavern: { getContext: () => context }, window: {}, document: { querySelector: () => renderedElement }, jQuery: () => ({ val: () => null }) });
     const mocks = {
-        '../../../../../script.js': { chat_metadata: metadata, saveChatDebounced: () => saves++, setExtensionPrompt() {}, extension_prompt_roles: { SYSTEM: 0 }, extension_prompt_types: { IN_CHAT: 0 }, callPopup: async () => false },
+        '../../../../../script.js': { chat_metadata: metadata, saveChatDebounced: () => saves++, setExtensionPrompt() {}, extension_prompt_roles: { SYSTEM: 0 }, extension_prompt_types: { IN_CHAT: 0 }, callPopup: async html => { audit.interviews.push(html); return false; } },
         '../../../../extensions.js': { extension_settings: { 'BB-Visual-Novel': {} } },
         './generator.js': { buildChoiceContextPrompt: () => '', getActiveChoiceContext: () => null, tryBindPendingChoiceContextToMessage: () => false },
         './toasts.js': { showStoryMomentToast() {}, notifySuccess() {}, notifyInfo() {}, notifyError() {}, pickToastMoment: (a, b) => b, getMomentToastPriority: () => 0 },
@@ -40,6 +44,36 @@ async function harness() {
     const social = load('./social.js'); await social.link(load); await social.evaluate();
     const queue = load('./recalculation-queue.js'); await queue.link(load); await queue.evaluate();
     return { api: social.namespace, createQueue: queue.namespace.createRecalculationQueue, metadata, context, audit, state: cache.get('./state.js').namespace, get saves() { return saves; } };
+}
+
+for (const visible of [true, false]) {
+    test(`fresh hidden updates finish calculation, refresh HUD and ask initial relationships with a ${visible ? 'visible' : 'non-rendered'} message`, async () => {
+        const element = visible ? { innerHTML: 'Original message' } : null;
+        const h = await harness({ renderedElement: element });
+        const name = 'Кокушибо';
+        h.context.chat.push({ is_user: true, name: 'Player', force_avatar: 'player.png', mes: 'Hello.' }, {
+            name, mes: `${name} replies.<div class="bb-vn-data"><bb-social-updates><bb-social-update><name>${name}</name><friendship_impact>none</friendship_impact><romance_impact>none</romance_impact><reason>First conversation</reason></bb-social-update></bb-social-updates></div>`,
+        });
+        let renders = 0;
+        h.api.setRenderHudCallback(() => { renders++; });
+        assert.equal(h.context.markdownToHtml, undefined, 'the Tavern context has no markdownToHtml API');
+        h.api.recalculateAllStats(true);
+        assert.equal(renders, 1);
+        assert.equal(h.state.currentCalculatedStats[name].affinity, 0);
+        assert.equal(h.context.chat[1].mes, `${name} replies.`);
+        assert.equal(h.context.chat[1].extra.bb_social_swipes[0][0].name, name);
+        assert.equal(h.audit.messageRenders.length, visible ? 1 : 0);
+        if (visible) {
+            assert.equal(h.audit.messageRenders[0].id, 1);
+            assert.equal(element.innerHTML, `Formatted: ${name} replies.`);
+        }
+        assert.equal(h.audit.interviews.length, 1);
+        assert.match(h.audit.interviews[0], /Кокушибо/);
+        h.api.recalculateAllStats(false);
+        assert.equal(renders, 2);
+        assert.equal(h.audit.interviews.length, 1, 'recalculation does not repeat the initial relationship question');
+        assert.equal(h.audit.messageRenders.length, visible ? 1 : 0, 'already cleaned messages are not reformatted');
+    });
 }
 
 function fillChat(h, count = 100) {
