@@ -11,6 +11,14 @@ export function openHiddenCharacters() {
     const button = (text, action) => {
         const el = node('button', t(text), 'menu_button'); el.type = 'button'; el.addEventListener('click', action); return el;
     };
+    // Extension-style labeled button: icon + text, matching the toolbar popup
+    // («Вернуть» = green restore chip semantics, «Вернуть всех» = settings button).
+    const iconButton = (text, icon, action) => {
+        const el = document.createElement('button'); el.type = 'button'; el.className = 'menu_button';
+        el.append(node('i', '', icon), node('span', t(text)));
+        el.addEventListener('click', action);
+        return el;
+    };
     const dialog = node('dialog', '', 'bb-portrait-dialog bb-hidden-characters');
     const close = () => { dialog.close(); dialog.remove(); };
     const header = node('header');
@@ -22,7 +30,7 @@ export function openHiddenCharacters() {
     const status = node('p', '', 'bb-portrait-status'); status.setAttribute('role', 'status');
     const list = node('div', '', 'bb-hidden-list');
     const footer = node('footer');
-    const all = button('Вернуть всех', () => restore(null)); footer.append(all);
+    const all = iconButton('Вернуть всех', 'fa-solid fa-arrows-rotate', () => restore(null)); footer.append(all);
     const restore = name => {
         if (!session.current()) {
             status.textContent = t('Чат или персона изменились. Откройте список заново.');
@@ -44,7 +52,8 @@ export function openHiddenCharacters() {
             const initials = name.trim().split(/\s+/).slice(0,2).map(part => Array.from(part)[0] || '').join('').toUpperCase();
             const avatar = node('span', initials, 'bb-hidden-initials'); avatar.setAttribute('aria-hidden', 'true');
             const label = node('span', name, 'bb-hidden-name');
-            const action = button('Вернуть', () => restore(name)); action.setAttribute('aria-label', t('Вернуть') + ': ' + name);
+            const action = iconButton('Вернуть', 'fa-solid fa-arrow-up-from-bracket', () => restore(name));
+            action.setAttribute('aria-label', t('Вернуть') + ': ' + name);
             row.append(avatar, label, action); list.append(row);
         }
     }
@@ -56,7 +65,11 @@ export function openHiddenCharacters() {
 
 export function mountHiddenCharactersButton(root) {
     const button = document.createElement('button'); button.type = 'button'; button.className = 'menu_button bb-hidden-open';
-    button.textContent = t('Скрытые') + ' · ' + createHiddenCharacterSession().list().length;
+    const icon = document.createElement('i'); icon.className = 'fa-solid fa-eye-slash';
+    const label = document.createElement('span'); label.textContent = t('Скрытые') + ' · ' + createHiddenCharacterSession().list().length;
+    button.append(icon, label);
     button.addEventListener('click', openHiddenCharacters);
-    (root.querySelector('.bb-character-toolbar') || root).append(button);
+    // Prefer the always-visible disclosure row («Поиск и сортировка» actions) so the
+    // button survives the character toolbar being collapsed; fall back to old hosts.
+    (root.querySelector('.bb-character-toolbar-actions') || root.querySelector('.bb-character-toolbar') || root).append(button);
 }

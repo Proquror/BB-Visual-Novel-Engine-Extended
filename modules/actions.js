@@ -12,6 +12,7 @@ import {
 import {
     bbVnGenerateOptionsFlow,
     clearSavedVNOptions,
+    invalidateVnOptionsGeneration,
     setVnOptionsEnabled,
 } from './generator.js';
 import { injectCombinedSocialPrompt } from './social.js';
@@ -91,6 +92,10 @@ function openVnPanel(container) {
     scopedContainer.removeClass('is-closing');
     scopedContainer.addClass('active is-opening');
 
+    // Hide the generator on/off toggle while the panel is open — it sits next
+    // to the main button and would overlap the expanded options panel.
+    jQuery('#bb-vn-btn-toggle-generator').hide();
+
     window.requestAnimationFrame(() => {
         scopedContainer.removeClass('is-opening');
     });
@@ -105,6 +110,8 @@ function closeVnPanel(container, onClosed = null) {
 
     if (!scopedContainer.hasClass('active')) {
         scopedContainer.removeClass('is-closing is-opening');
+        // Restore the toggle even if the panel wasn't active (defensive).
+        if (extension_settings[MODULE_NAME]?.vnOptionsEnabled !== false) jQuery('#bb-vn-btn-toggle-generator').show();
         if (typeof onClosed === 'function') onClosed();
         return;
     }
@@ -115,6 +122,8 @@ function closeVnPanel(container, onClosed = null) {
     const timerId = window.setTimeout(() => {
         scopedContainer.removeData('bbVnCloseTimer');
         scopedContainer.removeClass('active is-closing is-opening');
+        // Restore the toggle now that the panel is closed.
+        if (extension_settings[MODULE_NAME]?.vnOptionsEnabled !== false) jQuery('#bb-vn-btn-toggle-generator').show();
         if (typeof onClosed === 'function') onClosed();
     }, VN_PANEL_CLOSE_MS);
 
@@ -326,13 +335,82 @@ export function renderVNOptionsFromData(parsedOptions, autoOpen = false) {
 
 window['renderVNOptionsFromData'] = renderVNOptionsFromData;
 
+function isVnOptionsDisabled() {
+    return extension_settings[MODULE_NAME]?.vnOptionsEnabled === false;
+}
+
+/**
+ * Inline generator toggle content (Extended fork): a compact power-off icon
+ * next to the main button while enabled; a labelled "turn on" button while
+ * disabled (the re-enable affordance right where the main button lived).
+ */
+function buildGeneratorToggleContent() {
+    const disabled = isVnOptionsDisabled();
+    if (disabled) {
+        return `
+            <span class="bb-vn-gen-toggle__content">
+                <i class="fa-solid fa-power-off"></i>
+                <span class="bb-vn-gen-toggle__label">${t('Генератор выключен')}</span>
+            </span>
+        `;
+    }
+    return `
+        <span class="bb-vn-gen-toggle__content">
+            <i class="fa-solid fa-power-off"></i>
+        </span>
+    `;
+}
+
+/**
+ * Synchronises the inline generator toggle (Extended fork) with the
+ * vnOptionsEnabled engine: content, title, aria-pressed and the settings
+ * checkbox. The action bar itself is shown/hidden by syncOptionsVisibility
+ * (upstream), which hides the whole bar while the generator is off — the
+ * re-enable affordances are the HUD toolbar button, the settings pill and
+ * the "VN" restore button next to the options menu.
+ */
+export function updateVnGeneratorEnabledState() {
+    const disabled = isVnOptionsDisabled();
+    const toggle = jQuery('#bb-vn-btn-toggle-generator');
+
+    if (toggle.length) {
+        toggle
+            .toggleClass('is-disabled', disabled)
+            .attr('title', disabled
+                ? t('Генератор действий отключён — нажми, чтобы включить')
+                : t('Отключить генератор действий'))
+            .attr('aria-pressed', disabled ? 'true' : 'false')
+            .html(buildGeneratorToggleContent());
+    }
+
+    // Sync the settings panel checkbox if it exists.
+    const checkbox = document.getElementById('bb-vn-cfg-options-enabled');
+    if (checkbox) checkbox.checked = !disabled;
+}
+
+function toggleGeneratorEnabled() {
+    const nextDisabled = !isVnOptionsDisabled();
+    // setVnOptionsEnabled keeps the checkbox, action bar visibility, saved
+    // options, generation tokens and the toolbar button in sync.
+    setVnOptionsEnabled(!nextDisabled);
+    notifyInfo(nextDisabled
+        ? t('Генератор вариантов действий отключён. Кнопка «Действия VN» скрыта.')
+        : t('Генератор вариантов действий включён. Кнопка «Действия VN» снова доступна.'));
+}
+
 export function injectVNActionsUI() {
+    // Idempotent: sync the inline toggle whenever the engine state changes.
+    if (!window.__bbVnToggleSync) {
+        window.__bbVnToggleSync = true;
+        window.addEventListener('bb-vn-options-enabled-changed', updateVnGeneratorEnabledState);
+    }
     const existing = document.getElementById('bb-vn-action-bar');
     if (existing) {
         syncOptionsVisibility(extension_settings[MODULE_NAME]?.vnOptionsEnabled !== false);
+        updateVnGeneratorEnabledState();
         return;
     }
-    const barHtml = t('<div id="bb-vn-action-bar" style="display: flex;"><div id="bb-vn-btn-generate" class="bb-vn-main-btn" title="Открыть панель действий VN"></div><div id="bb-vn-options-container"></div></div>');
+    const barHtml = t('<div id="bb-vn-action-bar" style="display: flex;"><div class="bb-vn-action-row"><div id="bb-vn-btn-generate" class="bb-vn-main-btn" title="Открыть панель действий VN"></div><button type="button" id="bb-vn-btn-toggle-generator" class="bb-vn-gen-toggle" title="Отключить генератор действий" aria-pressed="false"></button></div><div id="bb-vn-options-container"></div></div>');
     jQuery('#send_form').prepend(barHtml);
     const restoreHost = document.getElementById('leftSendForm') || document.getElementById('send_form');
     const restoreButton = jQuery(ui`<button type="button" id="bb-vn-enable-options" title="Включить варианты VN" aria-label="Включить варианты VN" hidden>VN</button>`);
@@ -341,22 +419,35 @@ export function injectVNActionsUI() {
     else jQuery(restoreHost).prepend(restoreButton);
     jQuery('#bb-vn-enable-options').on('click', () => setVnOptionsEnabled(true));
     syncOptionsVisibility(extension_settings[MODULE_NAME]?.vnOptionsEnabled !== false);
+    updateVnGeneratorEnabledState();
     setVnGenerateButtonIdle();
 
     const ta = document.querySelector('#send_textarea');
     if (ta instanceof HTMLTextAreaElement) {
         ta.addEventListener('input', () => {
             const btn = document.getElementById('bb-vn-btn-generate');
+            const toggleBtn = document.getElementById('bb-vn-btn-toggle-generator');
             const opts = document.getElementById('bb-vn-options-container');
             if (ta.value.trim().length > 0) {
+                // While typing, hide both the generate button and the generator
+                // toggle so they don't crowd the input area (fork behavior).
                 if (btn) btn.style.display = 'none';
+                if (toggleBtn) toggleBtn.style.display = 'none';
             } else if (opts && !opts.classList.contains('active')) {
                 if (btn) btn.style.display = 'block';
+                if (toggleBtn) toggleBtn.style.display = '';
             }
         });
     }
 
+    // Click-to-cancel: the loading tooltip promises it (vn-ui.js) and the flow's
+    // own re-invocation branch implements it (generator.js) — route the click.
     jQuery('#bb-vn-btn-generate').on('click', function() {
+        if (jQuery(this).hasClass('loading')) {
+            invalidateVnOptionsGeneration();
+            notifyInfo(t('Генерация вариантов отменена'));
+            return;
+        }
         const container = jQuery('#bb-vn-options-container');
         if (container.children('.bb-vn-option[data-intent]').length > 0) {
             openVnPanel(container);
@@ -364,5 +455,10 @@ export function injectVNActionsUI() {
         } else {
             renderVnActionPanel(true);
         }
+    });
+
+    jQuery('#bb-vn-btn-toggle-generator').on('click', function(e) {
+        e.stopPropagation();
+        toggleGeneratorEnabled();
     });
 }

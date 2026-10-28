@@ -39,7 +39,10 @@ test('valid v1 export/import round trip keeps relationships and log',async()=>{
     const h=await harness();h.api.importActivePersonaSnapshot(fixture());h.api.recalculateAllStats(false);
     assert.equal(h.state.currentCalculatedStats.Alex.affinity,25);
     const exported=h.api.exportActivePersonaSnapshot();
-    assert.equal(exported.module,'BB-Visual-Novel');assert.equal(exported.schema_version,1);
+    assert.equal(exported.module,'BB-Visual-Novel');
+    // Exports are always v2 now (raw_message_updates may be empty for chats
+    // without VNE-tagged messages); v1 files remain importable.
+    assert.equal(exported.schema_version,2);
     assert.equal(exported.data.characters.Alex.affinity,25);assert.equal(exported.data.global_log[0].text,'Saved log');
     assert.equal(h.snapshot.parseSnapshot(JSON.stringify(exported)).summary.characters,1);
 });
@@ -106,7 +109,7 @@ test('neutral first contact is parsed, saved and replayed without relationship i
 
 test('legacy bare data is accepted, unknown envelopes are not',async()=>{
     const h=await harness();assert.equal(h.snapshot.parseSnapshot(fixture().data).summary.format,'legacy');
-    for(const change of [{module:'Other'},{schema_version:2},{schema_version:'1'},{schema_version:null}])assert.throws(()=>h.api.importActivePersonaSnapshot({...fixture(),...change}));
+    for(const change of [{module:'Other'},{schema_version:3},{schema_version:'1'},{schema_version:null}])assert.throws(()=>h.api.importActivePersonaSnapshot({...fixture(),...change}));
     assert.throws(()=>h.api.importActivePersonaSnapshot({data:fixture().data}));
 });
 
@@ -408,17 +411,22 @@ test('one Data editor lists chat memories without import and imported entries af
  const originalChat=h.context.chat;h.context.chat=[];
  assert.equal(h.controls.listRelationshipEditorRecords(scope).some(record=>record.kind==='memory'),false);
  h.context.chat=originalChat;
- h.editor.changeMemoryEntry(chatMemory.index,chatMemory.revision,'edit','A revised recollection');
+ h.api.applyMemoryEntryAction(chatMemory,'edit','A revised recollection');
  h.api.recalculateAllStats(false);
  records=h.controls.listRelationshipEditorRecords(scope);
  assert.equal(records.find(record=>record.kind==='memory').text,'A revised recollection');
  let memory=records.find(record=>record.kind==='memory');
- h.editor.changeMemoryEntry(memory.index,memory.revision,'delete');h.api.recalculateAllStats(false);
+ h.api.applyMemoryEntryAction(memory,'delete');h.api.recalculateAllStats(false);
+ // Deleting the chat trace disables the backing event: the memory record
+ // disappears and undo moves to the event record.
+ h.nodes.get('#bb-social-snapshot-record-filters').dataset.filter='all';
  h.controls.refreshSnapshotControls(scope);
+ assert.equal(h.controls.listRelationshipEditorRecords(scope).some(record=>record.kind==='memory'),false);
+ const disabledEvent=h.controls.listRelationshipEditorRecords(scope).find(record=>record.kind==='event');
+ assert.equal(disabledEvent.disabled,true);assert.equal(disabledEvent.canUndo,true);
  assert.equal(h.nodes.get('#bb-social-snapshot-record-save').disabled,true);
  assert.equal(h.nodes.get('#bb-social-snapshot-record-undo').disabled,false);
- memory=h.controls.listRelationshipEditorRecords(scope).find(record=>record.kind==='memory');
- h.editor.changeMemoryEntry(memory.index,memory.revision,'undo');h.api.recalculateAllStats(false);
+ h.eventEditor.changeRelationshipEvent(scope,disabledEvent.index,disabledEvent.revision,'undo');h.api.recalculateAllStats(false);
  assert.equal(h.controls.listRelationshipEditorRecords(scope).find(record=>record.kind==='memory').text,'A revised recollection');
  const imported=fixture();imported.data.characters.Alex.memories.archive=[{text:'Imported promise',delta:10,tone:'positive'}];
  h.api.importActivePersonaSnapshot(imported);h.api.recalculateAllStats(false);
@@ -453,6 +461,81 @@ test('zero-point chat events still expose their character in the editor',async()
  assert.equal(h.nodes.get('#bb-social-snapshot-record-undo').disabled,true);
 });
 
+test('zero-point events are marked in the editor list and explained in the edit hint',async()=>{
+ const h=await harness();const scopeKey=h.api.getCurrentPersonaScopeKey();
+ h.context.chat.push({name:'Alex',mes:'A quiet night',swipe_id:0,extra:{bb_social_swipes:{0:[
+  {name:'Alex',friendship_impact:'none',romance_impact:'none',reason:'Stayed silent',emotion:'curiosity',scope:scopeKey},
+  {name:'Alex',friendship_impact:'minor_positive',romance_impact:'none',reason:'Shared bread',scope:scopeKey}]}}});
+ h.api.recalculateAllStats(false);
+ const scope=h.api.bindActivePersonaState().scopeState;
+ for(const id of ['records','record-search','record-filters','record-list','record-preview','record-remove','record-undo','record-text','record-text-label','record-hint','record-save','event-fields','event-mood','event-friendship','event-romance']) {
+  h.nodes.set(id==='records'?'#bb-social-snapshot-records':`#bb-social-snapshot-${id}`,h.createNode());
+ }
+ h.nodes.get('#bb-social-snapshot-record-filters').dataset.filter='event';
+ h.controls.refreshSnapshotControls(scope);
+ const list=h.nodes.get('#bb-social-snapshot-record-list');
+ assert.equal(list.children.length,2);
+ assert.match(list.children[0].children[0].textContent,/Чат · Без баллов/);
+ assert.doesNotMatch(list.children[1].children[0].textContent,/Без баллов/);
+ // The selected zero-point event carries the two-line explanation hint.
+ const zeroHint=h.nodes.get('#bb-social-snapshot-record-hint').textContent;
+ assert.match(zeroHint,/У события нулевые баллы/);
+ assert.match(zeroHint,/\nПравка события пересчитает баллы отношений/);
+ assert.equal(h.nodes.get('#bb-social-snapshot-event-friendship').value,0);
+ // Selecting a point event drops the zero-point explanation.
+ h.nodes.get('#bb-social-snapshot-record-list').dataset.selected='event:0|0|1';
+ h.controls.refreshSnapshotControls(scope);
+ assert.doesNotMatch(h.nodes.get('#bb-social-snapshot-record-hint').textContent,/нулевые баллы/);
+ assert.equal(h.nodes.get('#bb-social-snapshot-event-friendship').value,2);
+ // Disabling the zero-point event replaces the badge with the disabled mark.
+ const zero=h.controls.listRelationshipEditorRecords(scope).find(record=>record.kind==='event'&&record.friendshipDelta===0);
+ h.eventEditor.changeRelationshipEvent(scope,zero.index,zero.revision,'disable');
+ h.api.recalculateAllStats(false);
+ h.nodes.get('#bb-social-snapshot-record-list').dataset.selected='event:0|0|0';
+ h.controls.refreshSnapshotControls(scope);
+ assert.match(list.children[0].children[0].textContent,/Отключено/);
+ assert.doesNotMatch(list.children[0].children[0].textContent,/Без баллов/);
+ assert.doesNotMatch(h.nodes.get('#bb-social-snapshot-record-hint').textContent,/нулевые баллы/);
+ // English locale covers both new strings.
+ h.settings['BB-Visual-Novel'].uiLanguage='en';
+ h.controls.refreshSnapshotControls(scope);
+ assert.match(list.children[0].children[0].textContent,/Disabled/);
+ assert.doesNotMatch(list.children[0].children[0].textContent,/No points/);
+});
+
+test('disabling the last trace keeps a discovered character card at base values',async()=>{
+ const h=await harness();const scopeKey=h.api.getCurrentPersonaScopeKey();
+ // Non-zero bases recorded before the first trace (card-editor path).
+ h.metadata.bb_vn_char_bases={Alex:5};h.metadata.bb_vn_char_bases_romance={Alex:2};
+ h.context.chat.push({name:'Alex',mes:'Alex replies',swipe_id:0,extra:{bb_social_swipes:{0:[{
+  name:'Alex',friendship_impact:'minor_positive',romance_impact:'none',reason:'Only trace',scope:scopeKey,
+ }]}}});
+ h.api.recalculateAllStats(false);
+ assert.equal(h.state.currentCalculatedStats.Alex.affinity,7);
+ const scope=h.api.bindActivePersonaState().scopeState;
+ const event=h.controls.listRelationshipEditorRecords(scope).find(record=>record.kind==='event');
+ h.eventEditor.changeRelationshipEvent(scope,event.index,event.revision,'disable');
+ h.api.recordActivePersonaBranchState();h.api.recalculateAllStats(false);
+ // The card survives with base values, no history and no traces — the same
+ // shape as a zero-point contact ("hide character" is the only removal path).
+ const stats=h.state.currentCalculatedStats.Alex;
+ assert.ok(stats,'once-discovered character keeps the card');
+ assert.equal(stats.affinity,5);
+ assert.equal(stats.romance,2);
+ assert.equal(stats.history.length,0);
+ assert.equal(stats.memories.soft.length,0);
+ assert.equal(h.api.exportActivePersonaSnapshot().data.characters.Alex.memories.soft.length,0);
+ // The disabled event stays listed and undoable; undo restores the trace.
+ const disabledEvent=h.controls.listRelationshipEditorRecords(scope).find(record=>record.kind==='event');
+ assert.equal(disabledEvent.disabled,true);assert.equal(disabledEvent.canUndo,true);
+ h.eventEditor.changeRelationshipEvent(scope,disabledEvent.index,disabledEvent.revision,'undo');
+ h.api.recordActivePersonaBranchState();h.api.recalculateAllStats(false);
+ assert.equal(h.state.currentCalculatedStats.Alex.affinity,7);
+ // A hidden character stays fully excluded from the tracker even with a base.
+ scope.ignored_chars=['Alex'];h.api.recalculateAllStats(false);
+ assert.equal(h.state.currentCalculatedStats.Alex,undefined);
+});
+
 test('editing a chat relationship event recalculates scores, memory, and journal with undo',async()=>{
  const h=await harness();const scopeKey=h.api.getCurrentPersonaScopeKey();
  const update={name:'Alex',friendship_impact:'minor_positive',romance_impact:'none',reason:'Original reason',emotion:'calm',scope:scopeKey};
@@ -479,7 +562,11 @@ test('editing a chat relationship event recalculates scores, memory, and journal
  event=h.controls.listRelationshipEditorRecords(scope).find(record=>record.kind==='event');
  h.eventEditor.changeRelationshipEvent(scope,event.index,event.revision,'disable');
  h.api.recordActivePersonaBranchState();h.api.recalculateAllStats(false);
- assert.equal(h.state.currentCalculatedStats.Alex,undefined);
+ // The disabled trace no longer erases a once-discovered character: the card
+ // stays at base values with no memories (hide-character is the removal path).
+ assert.equal(h.state.currentCalculatedStats.Alex.affinity,0);
+ assert.equal(h.state.currentCalculatedStats.Alex.history.length,0);
+ assert.equal(h.state.currentCalculatedStats.Alex.memories.soft.length,0);
  assert.equal(h.api.exportActivePersonaSnapshot().data.global_log.length,0);
  event=h.controls.listRelationshipEditorRecords(scope).find(record=>record.kind==='event');
  assert.equal(event.disabled,true);assert.equal(event.canUndo,true);
@@ -586,31 +673,108 @@ test('snapshot removal confirmation separates journal fields and escapes saved t
  assert.match(fallback,/Old journal text/);
 });
 
-test('memory edits persist on sources, undo deletion and preserve scores and journal across swipes',async()=>{
+test('chat memory pill edits route through the event engine: journal, diary and pills stay in sync',async()=>{
  const h=await harness();const scope=h.api.getCurrentPersonaScopeKey();
  const event={name:'Alex',friendship_impact:'minor_positive',romance_impact:'none',reason:'Helped carry books',scope};
  const msg={name:'Alex',mes:'Alex says thanks',swipe_id:0,swipes:['Alex says thanks','Alex turns away'],extra:{bb_social_swipes:{0:[event],1:[{...event,reason:'Shared an umbrella'}]}}};
  h.context.chat.push(msg);h.api.recalculateAllStats(false);
- const score=h.state.currentCalculatedStats.Alex.affinity;
- const originalLog=h.api.exportActivePersonaSnapshot().data.global_log.map(e=>e.text);
  const entry=()=>h.editor.memoryEditorEntries('Alex')[0];
- let record=entry();h.editor.changeMemoryEntry(record.index,record.revision,'edit','A revised recollection');h.api.recalculateAllStats(false);
+ let record=entry();
+ h.api.applyMemoryEntryAction(record,'edit','A revised recollection');h.api.recalculateAllStats(false);
  assert.equal(h.state.currentCalculatedStats.Alex.memories.soft[0].text,'A revised recollection');
- assert.equal(h.state.currentCalculatedStats.Alex.affinity,score);
- assert.deepEqual(h.api.exportActivePersonaSnapshot().data.global_log.map(e=>e.text),originalLog);
+ assert.match(h.api.exportActivePersonaSnapshot().data.global_log.at(-1).text,/A revised recollection/);
+ assert.ok(h.state.currentStoryMoments.some(moment=>moment.text.includes('A revised recollection')));
  assert.equal(event.reason,'Helped carry books');
  msg.swipe_id=1;h.api.recalculateAllStats(false);assert.equal(entry().text,'Shared an umbrella');
  msg.swipe_id=0;h.api.recalculateAllStats(false);assert.equal(entry().text,'A revised recollection');
- record=entry();h.editor.changeMemoryEntry(record.index,record.revision,'delete');h.api.recalculateAllStats(false);
- assert.equal(h.state.currentCalculatedStats.Alex.memories.soft.length,0);assert.equal(entry().hidden,true);
- assert.equal(h.state.currentCalculatedStats.Alex.affinity,score);
- record=entry();h.editor.changeMemoryEntry(record.index,record.revision,'undo');h.api.recalculateAllStats(false);assert.equal(entry().text,'A revised recollection');
- record=entry();h.editor.changeMemoryEntry(record.index,record.revision,'undo');h.api.recalculateAllStats(false);assert.equal(entry().text,'Helped carry books');
- record=entry();h.editor.changeMemoryEntry(record.index,record.revision,'edit','Persisted');h.api.recalculateAllStats(false);
- // Rehydrate serialized chat and metadata into fresh modules, as after a reload.
+ // Journal-side edits reach the pill even after a pill edit (no overlay pinning).
+ assert.equal(h.api.applyRelationshipEventEdit('0|0|0','edit',{reason:'From the journal',mood:'',friendshipDelta:2,romanceDelta:0}).ok,true);
+ assert.equal(entry().text,'From the journal');
+ // Deleting the pill removes journal and diary too; undo restores everything.
+ record=entry();
+ h.api.applyMemoryEntryAction(record,'delete');h.api.recalculateAllStats(false);
+ // Deleting the last trace keeps the discovered card at base values; only
+ // journal, diary and traces are gone (the event stays undoable below).
+ assert.equal(h.state.currentCalculatedStats.Alex.affinity,0);
+ assert.equal(h.state.currentCalculatedStats.Alex.memories.soft.length,0);
+ assert.equal(h.api.exportActivePersonaSnapshot().data.global_log.length,0);
+ assert.equal(h.state.currentStoryMoments.some(moment=>/revised|journal/.test(moment.text)),false);
+ assert.equal(h.api.applyRelationshipEventEdit('0|0|0','undo').ok,true);
+ // Undoing the delete restores the pre-delete state; a further undo from the
+ // memory-editor surface reverts the journal edit itself.
+ assert.equal(entry().text,'From the journal');
+ assert.equal(h.state.currentCalculatedStats.Alex.affinity,2);
+ record=entry();
+ assert.equal(h.api.applyMemoryEntryAction(record,'undo'),true);
+ h.api.recalculateAllStats(false);
+ assert.equal(entry().text,'A revised recollection');
+ // Persistence across reload: the event override survives serialization.
  const reloaded=await harness();Object.assign(reloaded.metadata,JSON.parse(JSON.stringify(h.metadata)));reloaded.context.chat=JSON.parse(JSON.stringify(h.context.chat));
- reloaded.api.recalculateAllStats(false);assert.equal(reloaded.state.currentCalculatedStats.Alex.memories.soft[0].text,'Persisted');
+ reloaded.api.recalculateAllStats(false);
+ assert.equal(reloaded.editor.memoryEditorEntries('Alex')[0].text,'A revised recollection');
  assert.equal(reloaded.editor.memoryEditorEntries('Alex')[0].canUndo,true);
+});
+test('legacy chat-origin text overlays no longer pin pills against event edits',async()=>{
+ const h=await harness();const scopeKey=h.api.getCurrentPersonaScopeKey();
+ const update={name:'Alex',friendship_impact:'minor_positive',romance_impact:'none',reason:'Helped carry books',scope:scopeKey};
+ // Pre-fix chats could carry bb_vn_text_edits on the source update; they
+ // must not resurrect the old desync (hidden pills or pinned texts).
+ update.bb_vn_text_edits={[scopeKey]:{positive:{text:'Legacy pin',undo:[]}}};
+ h.context.chat.push({name:'Alex',mes:'Alex says thanks',swipe_id:0,extra:{bb_social_swipes:{0:[update]}}});
+ h.api.recalculateAllStats(false);
+ assert.equal(h.editor.memoryEditorEntries('Alex')[0].text,'Helped carry books');
+ assert.equal(h.api.applyRelationshipEventEdit('0|0|0','edit',{reason:'Edited later',mood:'',friendshipDelta:2,romanceDelta:0}).ok,true);
+ assert.equal(h.editor.memoryEditorEntries('Alex')[0].text,'Edited later');
+});
+test('consecutive identical debug events both apply and a twin delete disables only its own event',async()=>{
+ const h=await harness();
+ h.metadata.bb_vn_char_bases={Alex:10};h.metadata.bb_vn_char_bases_romance={};
+ const debug=(friendship,romance,reason,id)=>({name:'Alex',friendship_impact:friendship,romance_impact:romance,reason,emotion:'тест',debug_event:true,debug_id:id});
+ const msg={name:'Alex',mes:'Alex reacts',swipe_id:0,extra:{bb_social_swipes:{0:[
+  {name:'Alex',friendship_impact:'none',romance_impact:'none',role_dynamic:'stranger',reason:'First contact'},
+  debug('unforgivable','none','Heavy betrayal','d1'),
+  debug('unforgivable','none','Heavy betrayal','d2'),
+  debug('none','major_positive','Growing attraction','d3'),
+ ]}}};
+ h.context.chat.push(msg);h.api.recalculateAllStats(false);
+ // Debug injections are exempt from repeat suppression: signature-identical
+ // twins both reach history, memories, journal and diary.
+ assert.equal(h.state.currentCalculatedStats.Alex.affinity,-30);
+ assert.equal(h.state.currentCalculatedStats.Alex.romance,8);
+ assert.equal(h.state.currentCalculatedStats.Alex.history.length,3);
+ assert.equal(h.state.currentCalculatedStats.Alex.memories.deep.length,2);
+ const deepPills=()=>h.editor.memoryEditorEntries('Alex').filter(record=>record.kind==='deep');
+ // Deleting one twin through its pill disables only that twin's event.
+ h.api.applyMemoryEntryAction(deepPills()[0],'delete');h.api.recalculateAllStats(false);
+ assert.equal(h.state.currentCalculatedStats.Alex.affinity,-10);
+ assert.equal(h.state.currentCalculatedStats.Alex.romance,8);
+ assert.equal(h.state.currentCalculatedStats.Alex.history.length,2);
+ assert.equal(h.state.currentCalculatedStats.Alex.memories.deep.length,1);
+ assert.equal(h.api.exportActivePersonaSnapshot().data.global_log.length,2);
+ assert.equal(msg.extra.bb_social_swipes[0].length,4,'deletion never mutates raw message records');
+ // Undo restores the deleted twin; the surviving twin was never touched.
+ assert.equal(h.api.applyRelationshipEventEdit('0|0|1','undo').ok,true);
+ h.api.recalculateAllStats(false);
+ assert.equal(h.state.currentCalculatedStats.Alex.affinity,-30);
+ assert.equal(h.state.currentCalculatedStats.Alex.memories.deep.length,2);
+});
+test('trait and snapshot records stay on the memory editor engine while chat traces refuse untracked routing',async()=>{
+ const h=await harness();const scope=h.api.getCurrentPersonaScopeKey();
+ h.context.chat.push({name:'Alex',mes:'Alex is patient',swipe_id:0,extra:{bb_vn_char_traits_swipes:{0:[{charName:'Alex',trait:'Patient: Waits calmly',type:'positive',scope}]}}});h.api.recalculateAllStats(false);
+ const scopeState=h.api.bindActivePersonaState().scopeState;
+ const trait=h.editor.memoryEditorEntries('Alex').find(record=>record.kind==='trait');
+ assert.equal(h.api.memoryRecordEvent(trait),null);
+ assert.equal(h.api.applyMemoryEntryAction(trait,'edit','Patient: Listens first'),true);
+ h.api.recalculateAllStats(false);
+ assert.equal(h.state.currentCalculatedStats.Alex.core_traits[0].trait,'Patient: Listens first');
+ assert.equal(Object.keys(scopeState.relationship_event_edits).length,0);
+ // A chat-origin record whose event is not tracked is refused as stale
+ // instead of silently writing an overlay nothing will ever apply.
+ const orphan=h.editor.trackEditableRecord({text:'Orphan trace'},{},'positive','text');
+ h.editor.applyMemoryEdits({memories:{soft:[orphan]},core_traits:[]},'A','Alex');
+ const orphanRecord=h.editor.memoryEditorEntries('Alex').find(record=>record.kind==='soft');
+ assert.throws(()=>h.api.applyMemoryEntryAction(orphanRecord,'edit','Rewritten'),/EDITOR_STALE/);
+ assert.throws(()=>h.api.applyMemoryEntryAction(orphanRecord,'delete'),/EDITOR_STALE/);
 });
 test('imported memory and trait edits are materialized in exports, including archived memories',async()=>{
  const h=await harness();const data=fixture();
@@ -631,7 +795,7 @@ test('imported memory and trait edits are materialized in exports, including arc
 });
 test('editor rejects stale operations and separates personas on a shared source',async()=>{
  const h=await harness();const source={};
- const calculate=scope=>{h.editor.resetMemoryEditor();const stats={memories:{soft:[h.editor.trackEditableRecord({text:'Original'},source,'positive','text')]},core_traits:[]};h.editor.applyMemoryEdits(stats,scope,'Alex');return stats;};
+ const calculate=scope=>{h.editor.resetMemoryEditor();const stats={memories:{soft:[h.editor.trackEditableRecord({text:'Original'},source,'positive','text','snapshot')]},core_traits:[]};h.editor.applyMemoryEdits(stats,scope,'Alex');return stats;};
  calculate('A');let row=h.editor.memoryEditorEntries('Alex')[0];h.editor.changeMemoryEntry(row.index,row.revision,'edit','Persona A');
  assert.throws(()=>h.editor.changeMemoryEntry(row.index,row.revision,'delete'),/EDITOR_STALE/);
  assert.equal(calculate('B').memories.soft[0].text,'Original');assert.equal(calculate('A').memories.soft[0].text,'Persona A');
@@ -639,7 +803,7 @@ test('editor rejects stale operations and separates personas on a shared source'
 
 test('memory editor renders escaped text and guards delayed confirmation against changed scene',async()=>{
  const h=await harness();const source={};
- const stats={memories:{soft:[h.editor.trackEditableRecord({text:'<img src=x onerror=alert(1)>'},source,'positive','text')]},core_traits:[]};
+ const stats={memories:{soft:[h.editor.trackEditableRecord({text:'<img src=x onerror=alert(1)>'},source,'positive','text','snapshot')]},core_traits:[]};
  h.editor.resetMemoryEditor();h.editor.applyMemoryEdits(stats,'A','Alex');
  h.settings['BB-Visual-Novel'].uiLanguage='en';
  const html=h.editorUi.buildMemoryEditorHtml('Alex');assert.match(html,/Memory and trait editor/);assert.ok(html.includes('&lt;img'));assert.ok(!html.includes('<img'));
@@ -721,4 +885,65 @@ test('a restore session rejects a different persona',async()=>{
     const data=fixture();data.data.ignored_chars=['Alex'];h.api.importActivePersonaSnapshot(data);
     const session=h.api.createHiddenCharacterSession();h.context.user_avatar='persona-b.png';
     assert.equal(session.current(),false);assert.equal(session.restore(),false);
+});
+
+test('v2 snapshot with raw data fully replays into a chat containing the source history',async()=>{
+    const source=await harness();
+    const event={name:'Alex',friendship_impact:'minor_positive',romance_impact:'none',reason:'Helped carry tools'};
+    source.context.chat.push({name:'Alex',mes:'Alex accepts help.',swipe_id:0,extra:{bb_social_swipes:{0:[event]}}});
+    source.api.recalculateAllStats(false);
+    assert.ok(source.state.currentCalculatedStats.Alex);
+    const snapshot=source.api.exportActivePersonaSnapshot();
+    assert.equal(snapshot.schema_version,2);
+    assert.ok(snapshot.data.raw_message_updates['0']);
+    assert.equal(h2(snapshot).summary.format,'v2');
+    function h2(s){return source.snapshot.parseSnapshot(JSON.stringify(s));}
+    assert.equal(h2(snapshot).summary.rawMessages,1);
+
+    // Import into a DIFFERENT chat that contains the same messages without VNE data:
+    // raw restore writes into empty slots, empty baseline, full replay from 0.
+    const target=await harness();
+    target.context.chat.push({name:'Alex',mes:'Alex accepts help.',swipe_id:0,extra:{}});
+    const result=target.api.importActivePersonaSnapshot(snapshot);
+    assert.equal(result.hasRawUpdates,true);
+    assert.equal(JSON.stringify(target.context.chat[0].extra.bb_social_swipes['0'].map(u=>u.reason)),JSON.stringify(['Helped carry tools']));
+    assert.equal(target.context.chat[0].extra.bb_social_swipes['0'][0].scope,target.api.getCurrentPersonaScopeKey());
+    target.api.recalculateAllStats(false);
+    assert.ok(target.state.currentCalculatedStats.Alex);
+    // Journal and diary rebuilt from the replayed event, not stitched from the snapshot.
+    assert.equal(target.metadata['bb_vn_global_log'].length,1);
+});
+
+test('v2 snapshot into an empty chat falls back to the aggregated baseline',async()=>{
+    const source=await harness();
+    const event={name:'Alex',friendship_impact:'minor_positive',romance_impact:'none',reason:'Helped carry tools'};
+    source.context.chat.push({name:'Alex',mes:'Alex accepts help.',swipe_id:0,extra:{bb_social_swipes:{0:[event]}}});
+    source.api.recalculateAllStats(false);
+    const snapshot=source.api.exportActivePersonaSnapshot();
+
+    const target=await harness();
+    const result=target.api.importActivePersonaSnapshot(snapshot);
+    assert.equal(result.hasRawUpdates,true);
+    target.api.recalculateAllStats(false);
+    // No messages to replay — the aggregated characters still transfer.
+    assert.ok(target.state.currentCalculatedStats.Alex);
+});
+
+test('hostile raw_message_updates structures are rejected',async()=>{
+    const h=await harness();
+    for(const raw of [
+        {0:{bb_social_swipes:{0:null}}},
+        {0:{bb_social_swipes:{'x':[]}}},
+        {0:{bb_social_swipes:{0:'nope'}}},
+        {0:{bb_social_swipes:{0:[7]}}},
+        {0:{bb_social_swipes:{0:Array.from({length:201},()=>({}))}}},
+        {'-1':{bb_social_swipes:{0:[]}}},
+        {99999999:{bb_social_swipes:{0:[]}}},
+        Object.fromEntries(Array.from({length:10001},(_,i)=>[i,{}])),
+    ]) {
+        const doc={schema_version:2,module:'BB-Visual-Novel',data:{characters:{},raw_message_updates:raw}};
+        assert.throws(()=>h.snapshot.parseSnapshot(doc),JSON.stringify(raw).slice(0,40));
+    }
+    // raw_message_updates is only legal in v2 envelopes
+    assert.throws(()=>h.snapshot.parseSnapshot({schema_version:1,module:'BB-Visual-Novel',data:{characters:{},raw_message_updates:{}}}));
 });

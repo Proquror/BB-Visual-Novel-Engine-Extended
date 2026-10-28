@@ -3,6 +3,7 @@ import { t, ui, getUiLanguage } from './i18n.js';
 let currentChat;
 let currentKey = '';
 let query = '';
+let toolbarOpen = false;
 const modes = ['trust_desc', 'trust_asc', 'romance_desc', 'name'];
 export const normalizeCharacterSort = value => modes.includes(value) ? value : 'trust_desc';
 
@@ -30,8 +31,31 @@ export function mountCharacterToolbar(root, stats, settings, context, persona, s
     if (!stack) return;
     syncCharacterToolbarContext(context, persona);
     const doc = root.ownerDocument;
+    // Disclosure: the search/sort tools live behind a «Поиск и сортировка» pill,
+    // so the characters panel stays clean until the user asks for the tools.
+    const disclosure = doc.createElement('div');
+    disclosure.className = 'bb-character-toolbar-disclosure';
+    disclosure.classList.toggle('is-open', toolbarOpen);
+    const actions = doc.createElement('div');
+    actions.className = 'bb-character-toolbar-actions';
+    const toggle = doc.createElement('button');
+    toggle.type = 'button';
+    toggle.className = 'bb-character-toolbar-toggle';
+    toggle.setAttribute('aria-expanded', toolbarOpen ? 'true' : 'false');
+    const toggleIcon = doc.createElement('i');
+    toggleIcon.className = 'fa-solid fa-magnifying-glass';
+    const toggleLabel = doc.createElement('span');
+    toggleLabel.textContent = t('Поиск и сортировка');
+    const toggleBadge = doc.createElement('span');
+    toggleBadge.className = 'bb-character-toolbar-badge';
+    const toggleChevron = doc.createElement('i');
+    toggleChevron.className = 'fa-solid fa-chevron-down';
+    toggle.append(toggleIcon, toggleLabel, toggleBadge, toggleChevron);
+    actions.append(toggle);
+    disclosure.append(actions);
     const toolbar = doc.createElement('div');
     toolbar.className = 'bb-character-toolbar';
+    toolbar.classList.toggle('bb-character-toolbar-collapsed', !toolbarOpen);
     const searchLabel = doc.createElement('label');
     searchLabel.textContent = t('Поиск персонажа');
     const search = doc.createElement('input');
@@ -52,7 +76,12 @@ export function mountCharacterToolbar(root, stats, settings, context, persona, s
     const count = doc.createElement('span');count.className = 'bb-character-result-count';count.setAttribute('aria-live', 'polite');
     const empty = doc.createElement('div');empty.className = 'bb-empty-hud';empty.textContent = t('Персонажи не найдены. Измените поиск.');
     toolbar.append(searchLabel, sortLabel, compactLabel, reset, count);
-    root.insertBefore(toolbar, stack);root.insertBefore(empty, stack);
+    disclosure.append(toolbar);
+    // The disclosure introduces the whole panel: it sits ABOVE the route hero
+    // (like a panel header) instead of splitting the hero from the cards.
+    const hero = root.querySelector('.bb-panel-hero');
+    root.insertBefore(disclosure, hero || stack);
+    root.insertBefore(empty, stack);
     const cards = new Map([...stack.querySelectorAll('.bb-char-card')].map(card => [card.dataset.char, card]));
     function update() {
         const names = selectCharacterNames(stats, query, sort.value);
@@ -63,7 +92,20 @@ export function mountCharacterToolbar(root, stats, settings, context, persona, s
         count.textContent = ui`Показано: ${names.length} / ${cards.size}`;
         empty.hidden = names.length > 0;
         reset.disabled = !search.value;
+        // While the tools are collapsed, the badge on the toggle is the only
+        // reminder that a filter is active.
+        const filtering = String(query).trim() !== '' || sort.value !== 'trust_desc';
+        toggleBadge.textContent = filtering ? String(names.length) : '';
+        toggleBadge.classList.toggle('is-active', filtering);
+        toggle.setAttribute('aria-expanded', toolbarOpen ? 'true' : 'false');
     }
+    toggle.addEventListener('click', () => {
+        toolbarOpen = !toolbarOpen;
+        disclosure.classList.toggle('is-open', toolbarOpen);
+        toolbar.classList.toggle('bb-character-toolbar-collapsed', !toolbarOpen);
+        toggle.setAttribute('aria-expanded', toolbarOpen ? 'true' : 'false');
+        if (toolbarOpen) search.focus();
+    });
     search.addEventListener('input', () => { query = search.value;update(); });
     reset.addEventListener('click', () => { query = '';search.value = '';update();search.focus(); });
     sort.addEventListener('change', () => { settings.hudCharacterSort = normalizeCharacterSort(sort.value);save();update(); });

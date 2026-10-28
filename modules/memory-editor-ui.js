@@ -1,6 +1,7 @@
 import { t, ui } from './i18n.js';
 import { escapeHtml } from './utils.js';
-import { memoryEditorEntries, changeMemoryEntry } from './memory-editor.js';
+import { memoryEditorEntries } from './memory-editor.js';
+import { applyMemoryEntryAction, memoryRecordEvent } from './social.js';
 
 export function buildMemoryEditorHtml(name) {
     const records = memoryEditorEntries(name);
@@ -14,7 +15,7 @@ export function buildMemoryEditorHtml(name) {
     }).join('');
     return ui`<details class="bb-memory-editor" data-char="${escapeHtml(name)}">
         <summary>Редактор памяти и черт</summary>
-        <p>Правки меняют память для будущих ответов, но не баллы отношений и не журнал событий. Удалённые записи можно вернуть через отмену. Сохраняются последние 20 правок каждой записи.</p>
+        <p>Правки черт и импортированных записей меняют только память. Правки следов из чата применяются к событию: синхронно обновляются журнал и дневник, баллы пересчитываются. Последние 20 правок каждой записи можно отменить.</p>
         <label>Запись<select class="text_pole bb-memory-select">${options}</select></label>
         <label>Текст записи<textarea class="text_pole bb-memory-text" rows="4"></textarea></label>
         <p>Черта: «Название: описание», до 240 символов. Воспоминание: до 2000 символов.</p>
@@ -57,11 +58,13 @@ export function mountMemoryEditors(root, { getContext, getPersonaKey, confirm, c
             const action = button.dataset.action;
             const value = text.value;
             try {
-                if (action === 'delete' && await confirm(t('Удалить запись из памяти? Баллы отношений и журнал останутся прежними. Удаление можно отменить.')) !== true) return;
+                if (action === 'delete' && await confirm(memoryRecordEvent(record)
+                    ? t('Событие будет удалено из журнала и дневника, баллы отношений пересчитаются. Удаление можно отменить.')
+                    : t('Удалить запись из памяти? Баллы отношений и журнал останутся прежними. Удаление можно отменить.')) !== true) return;
                 const context = getContext();
                 if (context.chat !== chat || contextKey(context) !== key || getPersonaKey() !== persona
                     || JSON.stringify(context.chat?.map(message => [message.mes, message.swipe_id])) !== scene) throw new Error('EDITOR_STALE');
-                if (changeMemoryEntry(record.index, record.revision, action, value)) {
+                if (applyMemoryEntryAction(record, action, value)) {
                     changed(record.imported);
                     const refreshed = [...root.querySelectorAll('.bb-memory-editor')].find(node => node.dataset.char === editor.dataset.char);
                     if (refreshed) {

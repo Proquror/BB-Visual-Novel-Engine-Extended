@@ -20,9 +20,7 @@ import {
 import { notifyInfo, notifyError } from './toasts.js';
 import { 
     vnGenerationAbortController, 
-    isVnGenerationCancelled, 
     setVnGenerationAbortController, 
-    setIsVnGenerationCancelled,
     createVnOptionsGenerationToken,
     isActiveVnOptionsGenerationToken,
 } from './state.js';
@@ -169,7 +167,7 @@ function createVnGenerationCancelledError() {
 }
 
 function ensureActiveVnOptionsGeneration(token) {
-    if (!isActiveVnOptionsGenerationToken(token) || isVnGenerationCancelled || !isCurrentOptionsOperation(token)) {
+    if (!isActiveVnOptionsGenerationToken(token) || !isCurrentOptionsOperation(token)) {
         throw createVnGenerationCancelledError();
     }
 }
@@ -302,20 +300,6 @@ export function isVnGenerationAbortError(error) {
     return message.includes('abort')
         || message.includes('cancel')
         || message.includes('отмен');
-}
-
-export function cancelVnGeneration() {
-    setIsVnGenerationCancelled(true);
-
-    if (vnGenerationAbortController) {
-        vnGenerationAbortController.abort();
-    }
-
-    try {
-        SillyTavern.getContext?.().stopGeneration?.();
-    } catch (error) {
-        console.debug('[BB VN] stopGeneration failed');
-    }
 }
 
 export async function generateFastPrompt(promptText, options = {}) {
@@ -671,23 +655,6 @@ function isValidTraitResult(value = '') {
     if (!traitName || !traitDescription) return false;
     if (traitName.split(/\s+/).length > 6) return false;
     return traitDescription.length >= 8;
-}
-
-function sanitizeCharacterDescriptionResult(value = '') {
-    return String(value || '')
-        .replace(/```[\s\S]*?```/g, ' ')
-        .replace(/^["'«»„“]+|["'«»„“]+$/g, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .slice(0, 520);
-}
-
-function isValidCharacterDescriptionResult(value = '') {
-    const text = sanitizeCharacterDescriptionResult(value);
-    if (!text || text.length < 60) return false;
-    if (/[{}\[\]]/.test(text)) return false;
-    if (isLikelyModelRefusalText(text)) return false;
-    return true;
 }
 
 function sanitizeStructuredCharacterDescriptionResult(value = '') {
@@ -1234,7 +1201,13 @@ export function setVnOptionsEnabled(enabled) {
         setVnGenerateButtonIdle();
         restoreVNOptions(false);
     }
-    syncOptionsVisibility(value, true);
+    // Animate the reveal when ENABLING; hide INSTANTLY when disabling — the
+    // old always-animated hide kept the bar on screen for ~200 ms while the
+    // bb-vn-options-enabled-changed handler below already swapped the toggle
+    // to its labelled «Генератор выключен» state, so both the main «Действия
+    // VN» button and that label flashed together before the bar went away
+    // (the fork hides the bar synchronously and never shows this state).
+    syncOptionsVisibility(value, value);
     window.dispatchEvent(new CustomEvent('bb-vn-options-enabled-changed'));
     saveSettingsDebounced();
 }
@@ -1252,7 +1225,6 @@ export async function bbVnGenerateOptionsFlow(request = []) {
 
     const requestToken = createVnOptionsGenerationToken();
     let completed = false;
-    setIsVnGenerationCancelled(false);
 
     setVnGenerateButtonLoading();
     resetVnOptionsContainer({ clear: true });
@@ -1414,8 +1386,6 @@ export async function bbVnGenerateOptionsFlow(request = []) {
         if (!completed && btn.hasClass('loading')) {
             restoreVNOptions(false);
         }
-
-        setIsVnGenerationCancelled(false);
     }
 }
 

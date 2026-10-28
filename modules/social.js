@@ -1,5 +1,5 @@
-import { resetMemoryEditor, trackEditableRecord, applyMemoryEdits } from './memory-editor.js';
-import { resetRelationshipEventEditor, relationshipEventKey, relationshipEventSignature, relationshipEventEdit, trackRelationshipEvent } from './relationship-event-editor.js';
+import { resetMemoryEditor, trackEditableRecord, applyMemoryEdits, memoryEntryMeta, changeMemoryEntry } from './memory-editor.js';
+import { resetRelationshipEventEditor, relationshipEventKey, relationshipEventSignature, relationshipEventEdit, trackRelationshipEvent, listRelationshipEvents, changeRelationshipEvent, findRelationshipEventForSource } from './relationship-event-editor.js';
 import { ensureBranchState, recordBranchState } from './branch-state.js';
 import { rememberRelationshipStart } from './relationship-breakdown.js';
 import { t, ui } from './i18n.js';
@@ -1275,8 +1275,28 @@ export function exportActivePersonaSnapshot() {
         characters[charName] = normalizeImportedCharacterStats(stats);
     });
 
+    // v2 payload: the chat's own raw VNE data (per-message, per-swipe) so an
+    // import into another chat/server can fully replay the history instead of
+    // stitching an aggregated baseline. Only non-empty maps are stored.
+    const rawMessageUpdates = {};
+    chat.forEach((msg, idx) => {
+        if (!msg?.extra) return;
+        const entry = {};
+        if (msg.extra.bb_social_swipes && typeof msg.extra.bb_social_swipes === 'object'
+            && Object.keys(msg.extra.bb_social_swipes).length > 0) {
+            entry.bb_social_swipes = cloneJsonData(msg.extra.bb_social_swipes, {});
+        }
+        if (msg.extra.bb_vn_char_traits_swipes && typeof msg.extra.bb_vn_char_traits_swipes === 'object'
+            && Object.keys(msg.extra.bb_vn_char_traits_swipes).length > 0) {
+            entry.bb_vn_char_traits_swipes = cloneJsonData(msg.extra.bb_vn_char_traits_swipes, {});
+        }
+        if (Object.keys(entry).length > 0) {
+            rawMessageUpdates[idx] = entry;
+        }
+    });
+
     return {
-        schema_version: 1,
+        schema_version: 2,
         module: MODULE_NAME,
         exported_at: new Date().toISOString(),
         scope_key: scopeKey,
@@ -1292,6 +1312,7 @@ export function exportActivePersonaSnapshot() {
             global_log: cloneJsonData(chat_metadata['bb_vn_global_log'], []),
             story_moments: cloneJsonData(currentStoryMoments, []),
             characters,
+            raw_message_updates: rawMessageUpdates,
         },
     };
 }
@@ -1299,7 +1320,7 @@ export function exportActivePersonaSnapshot() {
 export function importActivePersonaSnapshot(rawSnapshot = '') {
     const { snapshot: parsedSnapshot, data: snapshotData } = parseSnapshot(rawSnapshot);
 
-    const { scopeState } = bindActivePersonaState();
+    const { scopeKey, scopeState } = bindActivePersonaState();
     const chat = SillyTavern.getContext().chat || [];
     const normalizedCharacters = {};
     Object.entries(snapshotData.characters).forEach(([charName, stats]) => {
@@ -1307,6 +1328,12 @@ export function importActivePersonaSnapshot(rawSnapshot = '') {
         if (!safeName || isCollectiveEntityName(safeName) || isUserPersonaCharacterName(safeName)) return;
         normalizedCharacters[safeName] = normalizeImportedCharacterStats(stats);
     });
+
+    // v2: raw per-message data present → the chat itself will be restored and
+    // everything replays from message 0 (no aggregated baseline stitching).
+    const hasRawMessageUpdates = snapshotData.raw_message_updates
+        && typeof snapshotData.raw_message_updates === 'object'
+        && Object.keys(snapshotData.raw_message_updates).length > 0;
 
     // Replacing an imported baseline must not discard the pre-import recovery point.
     if (!scopeState.snapshot_baseline || !scopeState.snapshot_restore_state) scopeState.snapshot_restore_state = {
@@ -1326,20 +1353,133 @@ export function importActivePersonaSnapshot(rawSnapshot = '') {
     scopeState.platonic_chars = cloneJsonData(snapshotData.platonic_chars, []);
     scopeState.char_registry = cloneJsonData(snapshotData.char_registry, {});
     scopeState.merge_suggestions = cloneJsonData(snapshotData.merge_suggestions, []);
-    scopeState.snapshot_baseline = {
-        imported_at: new Date().toISOString(),
-        characters: normalizedCharacters,
-        global_log: cloneJsonData(snapshotData.global_log, []),
-        story_moments: cloneJsonData(snapshotData.story_moments, []),
-        char_bases: cloneJsonData(snapshotData.char_bases, {}),
-        char_bases_romance: cloneJsonData(snapshotData.char_bases_romance, {}),
-    };
+
+    let usedFullReplayBaseline = false;
+    if (hasRawMessageUpdates) {
+        // Restore the raw VNE data into the chat messages. Writes happen only
+        // into EMPTY slots — messages that already carry their own swipe data
+        // (same chat re-import, partially migrated chat) are left untouched.
+        // Stored scopes are remapped onto the current persona scope through
+        // the persona-binding aliases so replay accepts every entry.
+        const snapshotScopeKey = String(parsedSnapshot?.scope_key || '').trim();
+        const currentBinding = ensurePersonaBindingsStore()?.[getCurrentPersonaIdentity()?.ref || ''];
+        const allScopeAliases = new Set([
+            scopeKey,
+            snapshotScopeKey,
+            ...(Array.isArray(currentBinding?.aliases) ? currentBinding.aliases : []),
+        ].filter(Boolean));
+
+        let restoreWritten = 0;
+        let restoreSkipped = 0;
+
+        Object.entries(snapshotData.raw_message_updates).forEach(([idxStr, msgUpdates]) => {
+            const msgIdx = parseInt(idxStr, 10);
+            if (Number.isNaN(msgIdx) || msgIdx < 0 || msgIdx >= chat.length) return;
+            const msg = chat[msgIdx];
+            if (!msg) return;
+            if (!msg.extra) msg.extra = {};
+
+            if (msgUpdates.bb_social_swipes && typeof msgUpdates.bb_social_swipes === 'object') {
+                if (!msg.extra.bb_social_swipes) msg.extra.bb_social_swipes = {};
+                Object.entries(msgUpdates.bb_social_swipes).forEach(([swipeId, updates]) => {
+                    if (!Array.isArray(updates)) return;
+                    const existingEntries = msg.extra.bb_social_swipes[swipeId];
+                    if (Array.isArray(existingEntries) && existingEntries.length > 0) {
+                        restoreSkipped++;
+                        return;
+                    }
+                    msg.extra.bb_social_swipes[swipeId] = updates.map(update => {
+                        if (!update || typeof update !== 'object') return update;
+                        const originalScope = String(update.scope || '').trim();
+                        if (!originalScope || allScopeAliases.has(originalScope)) {
+                            return { ...update, scope: scopeKey };
+                        }
+                        return update;
+                    });
+                    restoreWritten++;
+                });
+            }
+
+            if (msgUpdates.bb_vn_char_traits_swipes && typeof msgUpdates.bb_vn_char_traits_swipes === 'object') {
+                if (!msg.extra.bb_vn_char_traits_swipes) msg.extra.bb_vn_char_traits_swipes = {};
+                Object.entries(msgUpdates.bb_vn_char_traits_swipes).forEach(([swipeId, traits]) => {
+                    if (!Array.isArray(traits)) return;
+                    const existingEntries = msg.extra.bb_vn_char_traits_swipes[swipeId];
+                    if (Array.isArray(existingEntries) && existingEntries.length > 0) return;
+                    msg.extra.bb_vn_char_traits_swipes[swipeId] = traits.map(trait => {
+                        if (!trait || typeof trait !== 'object') return trait;
+                        const originalScope = String(trait.scope || '').trim();
+                        if (!originalScope || allScopeAliases.has(originalScope)) {
+                            return { ...trait, scope: scopeKey };
+                        }
+                        return trait;
+                    });
+                });
+            }
+        });
+
+        console.warn('[BB VN][IMPORT] raw restore: written=' + restoreWritten + ' skipped=' + restoreSkipped
+            + ' rawMsgCount=' + Object.keys(snapshotData.raw_message_updates).length
+            + ' chatLength=' + chat.length);
+
+        // Full replay only when the target chat actually contains the source
+        // history (same or longer chat): the raw data can map onto messages and
+        // everything rebuilds from message 0 with perfect fidelity. Into an
+        // empty/shorter chat the raw payload cannot map — fall back to the
+        // aggregated v1 baseline so the persona's data still transfers.
+        const sourceChatLength = Number.isInteger(parsedSnapshot?.source_chat_length) ? parsedSnapshot.source_chat_length : 0;
+        const canFullyReplay = chat.length >= sourceChatLength;
+
+        if (canFullyReplay) {
+            // Empty baseline + zero cutoffs: the very next recalculation
+            // rebuilds characters, bases, journal and diary from the restored
+            // raw data — no aggregated stitching, no doubled entries.
+            scopeState.snapshot_baseline = {
+                imported_at: new Date().toISOString(),
+                characters: {},
+                global_log: [],
+                story_moments: [],
+                char_bases: {},
+                char_bases_romance: {},
+            };
+            scopeState.snapshot_cutoff_index = 0;
+            scopeState.log_cutoff_index = 0;
+            usedFullReplayBaseline = true;
+        }
+
+        // Keep the persona binding aware of this scope so future scope remaps
+        // (this import or later ones) recognise the restored entries.
+        const identity = getCurrentPersonaIdentity();
+        const identityRef = identity?.ref || `legacy:${getLegacyPersonaTextScopeKey()}`;
+        const bindings = ensurePersonaBindingsStore();
+        bindings[identityRef] = {
+            scope_key: scopeKey,
+            aliases: Array.isArray(bindings[identityRef]?.aliases) ? bindings[identityRef].aliases : [],
+            persona_name: identity?.name || '',
+            persona_avatar: identity?.avatarRef || '',
+            updated_at: Date.now(),
+        };
+    }
+
+    if (!usedFullReplayBaseline) {
+        // v1 path — or v2 fallback into a shorter chat: aggregated baseline at
+        // the current chat length (restored raw data stays inert behind the
+        // cutoff, ready for a future full replay if the chat grows).
+        scopeState.snapshot_baseline = {
+            imported_at: new Date().toISOString(),
+            characters: normalizedCharacters,
+            global_log: cloneJsonData(snapshotData.global_log, []),
+            story_moments: cloneJsonData(snapshotData.story_moments, []),
+            char_bases: cloneJsonData(snapshotData.char_bases, {}),
+            char_bases_romance: cloneJsonData(snapshotData.char_bases_romance, {}),
+        };
+        scopeState.snapshot_cutoff_index = Array.isArray(chat) ? chat.length : 0;
+        scopeState.log_cutoff_index = Array.isArray(chat) ? chat.length : 0;
+    }
     scopeState.snapshot_branch_uncertain = false;
-    scopeState.snapshot_cutoff_index = Array.isArray(chat) ? chat.length : 0;
     scopeState.snapshot_post_import_replay_keys = {};
     scopeState.snapshot_post_import_pending_swipes = {};
     scopeState.snapshot_record_undo = null;
-    scopeState.log_cutoff_index = Array.isArray(chat) ? chat.length : 0;
     if (parsedSnapshot?.persona_label) scopeState.label = String(parsedSnapshot.persona_label);
 
     bindActivePersonaState();
@@ -1347,6 +1487,7 @@ export function importActivePersonaSnapshot(rawSnapshot = '') {
     return {
         characters: Object.keys(normalizedCharacters).length,
         cutoffIndex: scopeState.snapshot_cutoff_index,
+        hasRawUpdates: hasRawMessageUpdates === true,
     };
 }
 
@@ -2331,13 +2472,19 @@ export function getCombinedSocial() {
     return withScopeOwnershipCache(buildCombinedSocial);
 }
 
-function buildCombinedSocial() {
+/**
+ * Build the auto-generated character data portion of the prompt
+ * ([CURRENT RELATIONSHIP STATUS], [NARRATIVE DIRECTIVES],
+ * [UNFORGETTABLE IMPACT LOGIC] and buildChoiceContextPrompt).
+ * Always derived from the current calculated stats — never overridable.
+ */
+function buildAutoGeneratedDataText() {
     const { scopeState, aliasSet } = bindActivePersonaState();
-    let combinedStr = SOCIAL_PROMPT + "\n\n" + buildOutputLanguageDirective();
+    let dataStr = '';
     const characters = getPromptRelevantCharacters(scopeState, aliasSet);
-    
+
     if (characters.length > 0) {
-        combinedStr += `\n\n[CURRENT RELATIONSHIP STATUS]:\n`;
+        dataStr += `\n\n[CURRENT RELATIONSHIP STATUS]:\n`;
         const impactInstructions = [];
 
         characters.forEach(char => {
@@ -2352,17 +2499,17 @@ function buildCombinedSocial() {
             const coreTraits = stats.core_traits || []; 
             const traitsText = coreTraits.length > 0 ? coreTraits.map(t => t.trait).join(' ') : '';
 
-            combinedStr += `- ${char}: [Status: ${status}] [Trust: ${stats.affinity}] [Romance: ${stats.romance || 0}]`;
-            if (profile.relationshipStatus) combinedStr += ` [User-confirmed label: ${profile.relationshipStatus}]`;
-            if (profile.description) combinedStr += ` [Profile: ${profile.description}]`;
-            if (recent) combinedStr += ` [Recent: ${recent}]`;
-            if (unforgettable) combinedStr += ` [Unforgettable: ${unforgettable}]`; 
-            if (traitsText) combinedStr += ` [CORE TRAITS: ${traitsText}]`; 
+            dataStr += `- ${char}: [Status: ${status}] [Trust: ${stats.affinity}] [Romance: ${stats.romance || 0}]`;
+            if (profile.relationshipStatus) dataStr += ` [User-confirmed label: ${profile.relationshipStatus}]`;
+            if (profile.description) dataStr += ` [Profile: ${profile.description}]`;
+            if (recent) dataStr += ` [Recent: ${recent}]`;
+            if (unforgettable) dataStr += ` [Unforgettable: ${unforgettable}]`; 
+            if (traitsText) dataStr += ` [CORE TRAITS: ${traitsText}]`; 
             
             if (chat_metadata['bb_vn_platonic_chars'] && chat_metadata['bb_vn_platonic_chars'].includes(char)) {
-                combinedStr += ` [CRITICAL: THIS CHARACTER IS STRICTLY PLATONIC. "romance_impact" MUST ALWAYS BE "none".]`;
+                dataStr += ` [CRITICAL: THIS CHARACTER IS STRICTLY PLATONIC. "romance_impact" MUST ALWAYS BE "none".]`;
             }
-            combinedStr += `\n`;
+            dataStr += `\n`;
 
             const impact = getUnforgettableImpact(stats.memories?.deep || []);
             let guideLines = [];
@@ -2383,20 +2530,41 @@ function buildCombinedSocial() {
             }
         });
 
-        combinedStr += `\n[NARRATIVE DIRECTIVES]:\n`;
-        combinedStr += `1. Behavior: Dialogue and actions must strictly match the Status and Relationship Tier.\n`;
-        combinedStr += `2. Memory: Characters must act based on 'Recent' (short-term mood) and 'Unforgettable' (permanent emotional anchor) memories.\n`;
-        combinedStr += `3. Profile Notes: If a character has a Profile note, treat it as active supporting canon for this scene.\n`;
-        combinedStr += `4. Name Consistency: For already tracked characters relevant to the current scene, use these exact canonical names in <name>: ${characters.join(', ')}.\n`;
-        combinedStr += `5. New Character Rule: You MUST register named characters not yet tracked when they directly interact with {{user}} or directly react to {{user}} in this turn, including people introduced earlier in the story. Use their established names instead of forcing them into an old identity. First-time tracking does not require a relationship change: use "none" for both impacts when no genuine change occurred. Do not register mere mentions or absent characters.`;
+        dataStr += `\n[NARRATIVE DIRECTIVES]:\n`;
+        dataStr += `1. Behavior: Dialogue and actions must strictly match the Status and Relationship Tier.\n`;
+        dataStr += `2. Memory: Characters must act based on 'Recent' (short-term mood) and 'Unforgettable' (permanent emotional anchor) memories.\n`;
+        dataStr += `3. Profile Notes: If a character has a Profile note, treat it as active supporting canon for this scene.\n`;
+        dataStr += `4. Name Consistency: For already tracked characters relevant to the current scene, use these exact canonical names in <name>: ${characters.join(', ')}.\n`;
+        dataStr += `5. New Character Rule: You MUST register named characters not yet tracked when they directly interact with {{user}} or directly react to {{user}} in this turn, including people introduced earlier in the story. Use their established names instead of forcing them into an old identity. First-time tracking does not require a relationship change: use "none" for both impacts when no genuine change occurred. Do not register mere mentions or absent characters.`;
 
         if (impactInstructions.length > 0) {
-            combinedStr += `\n\n[UNFORGETTABLE IMPACT LOGIC]:\n${impactInstructions.join('\n')}\n`;
-            combinedStr += `\nCRITICAL: Unforgettable memory directives override temporary scene moods.`;
+            dataStr += `\n\n[UNFORGETTABLE IMPACT LOGIC]:\n${impactInstructions.join('\n')}\n`;
+            dataStr += `\nCRITICAL: Unforgettable memory directives override temporary scene moods.`;
         }
     }
 
-    combinedStr += buildChoiceContextPrompt();
+    dataStr += buildChoiceContextPrompt();
+    return dataStr;
+}
+
+/**
+ * Read-only preview of the auto-generated character data text for the HUD.
+ */
+export function getAutoGeneratedDataText() {
+    return withScopeOwnershipCache(buildAutoGeneratedDataText);
+}
+
+function buildCombinedSocial() {
+    // Segment 1 — instructions: a per-chat override replaces the default
+    // SOCIAL_PROMPT; the output language directive is derived from settings
+    // and always appended.
+    const instructionsOverride = chat_metadata['bb_vn_prompt_instructions_override'];
+    const instructions = (typeof instructionsOverride === 'string' && instructionsOverride.trim())
+        ? instructionsOverride
+        : SOCIAL_PROMPT;
+    let combinedStr = instructions + "\n\n" + buildOutputLanguageDirective();
+    // Segments 2+ — always auto-generated from the current calculated stats.
+    combinedStr += buildAutoGeneratedDataText();
     return combinedStr;
 }
 
@@ -2579,6 +2747,10 @@ export function appendCharacterMemory(charStats, delta, reason, moodlet = '', op
         tone: getMemoryTone(delta),
         moodlet: sanitizeMoodlet(moodlet),
     };
+    // Provenance for the numeric impact badge on memory pills (Extended fork):
+    // both records of a friendship+romance update carry the same pair.
+    if (options.affinityDelta !== undefined) memory.affinityDelta = options.affinityDelta;
+    if (options.romanceDelta !== undefined) memory.romanceDelta = options.romanceDelta;
     const memoryKey = buildMemoryEntryDedupKey(memory);
     const hasDuplicate = !options?.allowDuplicate && charStats.memories[bucket].some(entry => buildMemoryEntryDedupKey(entry) === memoryKey);
     if (memoryKey && hasDuplicate) return;
@@ -2598,11 +2770,126 @@ export function maybeAddStoryMoment(moment) {
     return moment;
 }
 
-export function addGlobalLog(type, text, timeString) {
+export function addGlobalLog(type, text, timeString, sourceMeta = {}) {
     if (!chat_metadata['bb_vn_global_log']) chat_metadata['bb_vn_global_log'] = [];
     const time = timeString || new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-    chat_metadata['bb_vn_global_log'].push({ time, type, text });
+    const entry = { time, type, text };
+    // Provenance for inline event editing from the HUD: the relationship-event
+    // editor key («messageIndex|swipeId|updateIndex») lets journal entries map
+    // back to the tracked event entry without duplicating its data.
+    if (sourceMeta && sourceMeta.eventKey) entry.eventKey = String(sourceMeta.eventKey);
+    chat_metadata['bb_vn_global_log'].push(entry);
     if (chat_metadata['bb_vn_global_log'].length > 100) chat_metadata['bb_vn_global_log'].shift();
+}
+
+/**
+ * Find the tracked relationship-event editor entry for an eventKey
+ * («messageIndex|swipeId|updateIndex»). Returns null when the event is not
+ * tracked anymore (recalculation has not re-tracked it, snapshot baseline
+ * entry, or a stale key after a scene change).
+ */
+export function getRelationshipEventByKey(eventKey) {
+    const key = String(eventKey || '').trim();
+    if (!key) return null;
+    const chat = SillyTavern.getContext().chat;
+    const { scopeKey } = bindActivePersonaState();
+    return listRelationshipEvents(chat, scopeKey).find(entry => entry.key === key) || null;
+}
+
+/**
+ * Apply an edit/disable/undo action to a relationship event from the HUD.
+ * Wraps the upstream engine (changeRelationshipEvent) with save + recalc,
+ * mirroring the settings-panel flow but addressed by eventKey instead of a
+ * selected list record.
+ * @returns {{ ok: boolean, error?: string, changed?: boolean, entry?: object }}
+ */
+export function applyRelationshipEventEdit(eventKey, action, values = {}) {
+    const entry = getRelationshipEventByKey(eventKey);
+    if (!entry) return { ok: false, error: 'EVENT_NOT_FOUND' };
+    const { scopeState } = bindActivePersonaState();
+    let changed;
+    try {
+        changed = changeRelationshipEvent(scopeState, entry.index, entry.revision, action, values);
+    } catch (error) {
+        return { ok: false, error: String(error?.message || 'EDITOR_STALE') };
+    }
+    if (changed) {
+        recordActivePersonaBranchState();
+        saveChatDebounced();
+        recalculateAllStats(false);
+    }
+    return { ok: true, changed: Boolean(changed), entry };
+}
+
+/**
+ * canUndo resolver for applyMemoryEdits: chat-origin memory records report
+ * the undo availability of the relationship-event overlay backing them, so
+ * the settings memory editor exposes undo for pill-side edits too.
+ */
+function resolveChatOriginUndo(chat, scopeState) {
+    return source => {
+        const event = findRelationshipEventForSource(chat, scopeState, source);
+        return event ? event.canUndo : null;
+    };
+}
+
+/**
+ * Find the relationship event backing a memory-editor record, if any.
+ * Chat-origin soft/deep/archive records are projections of a tracked event
+ * (same sourceUpdate); traits and snapshot-imported records have no event
+ * counterpart and yield null. Pass the record captured by the UI — its
+ * revision is verified so stale snapshots never address shifted entries.
+ */
+export function memoryRecordEvent(record) {
+    if (!record) return null;
+    const meta = memoryEntryMeta(record.index, record.revision);
+    if (!meta || meta.kind === 'trait' || meta.origin === 'snapshot') return null;
+    const chat = SillyTavern.getContext().chat;
+    const { scopeState } = bindActivePersonaState();
+    return findRelationshipEventForSource(chat, scopeState, meta.source);
+}
+
+/**
+ * Route a memory-entry action (edit/delete/undo) from any UI surface —
+ * memory pills, settings memory editor, data editor.
+ *
+ * Chat-origin records are projections of a relationship event: routing their
+ * actions through the event engine keeps memory pills, journal and diary in
+ * sync from a single source (fork semantics) with one 20-level undo stack.
+ * Traits and snapshot-imported records stay on the memory-editor engine —
+ * they have no journal counterpart. A chat-origin record whose event is no
+ * longer tracked is refused as stale instead of silently desyncing the views.
+ */
+export function applyMemoryEntryAction(record, action, text = '') {
+    if (!record) return false;
+    const meta = memoryEntryMeta(record.index, record.revision);
+    const event = meta && meta.kind !== 'trait' && meta.origin !== 'snapshot'
+        ? memoryRecordEvent(record)
+        : null;
+    if (event) {
+        const { scopeState } = bindActivePersonaState();
+        let changed;
+        if (action === 'edit') {
+            // Reason-only edit: mood and scores carry over from the tracked
+            // event so the pill edit never rewrites points by accident.
+            changed = changeRelationshipEvent(scopeState, event.index, event.revision, 'edit', {
+                reason: String(text || '').trim(),
+                mood: event.mood,
+                friendshipDelta: event.friendshipDelta,
+                romanceDelta: event.romanceDelta,
+            });
+        } else if (action === 'delete') {
+            changed = changeRelationshipEvent(scopeState, event.index, event.revision, 'disable', {});
+        } else if (action === 'undo') {
+            changed = changeRelationshipEvent(scopeState, event.index, event.revision, 'undo', {});
+        } else {
+            throw new Error('EDITOR_ACTION');
+        }
+        if (changed) recordActivePersonaBranchState();
+        return changed;
+    }
+    if (meta && meta.kind !== 'trait' && meta.origin !== 'snapshot') throw new Error('EDITOR_STALE');
+    return changeMemoryEntry(record.index, record.revision, action, text);
 }
 
 function getJournalCutoffIndex(chat = []) {
@@ -2730,6 +3017,10 @@ export function scanAndCleanMessage(msg, messageId, trackDebug = false) {
     const originalMes = msg.mes;
     let currentMes = String(msg.mes || '').replace(/[\u200B-\u200D\uFEFF]/g, '');
 
+    // effectiveSwipeId tracks the REAL swipe index for this message.
+    // It starts as msg.swipe_id but may be corrected if stale.
+    let effectiveSwipeId = swipeId;
+
     if (trackDebug) {
         setSocialParseDebug('checking', t('Проверка текущего ответа'));
     }
@@ -2744,10 +3035,42 @@ export function scanAndCleanMessage(msg, messageId, trackDebug = false) {
             if (!msg.extra) msg.extra = {};
             if (!msg.extra.bb_social_swipes) msg.extra.bb_social_swipes = {};
 
-            msg.extra.bb_social_swipes[swipeId] = dedupedParsedUpdates.updates.map(update => ({
+            const freshUpdates = dedupedParsedUpdates.updates.map(update => ({
                 ...update,
                 scope: update.scope || scopeKey,
             }));
+
+            // Determine the actual swipe index for storing fresh parsed data.
+            // During a swipe, msg.swipe_id may still point to the OLD swipe,
+            // but ST has already written the new text into msg.swipes[new_index].
+            // We find the correct slot by checking which msg.swipes entry
+            // contains the VNE tag source text we just parsed.
+            let storeSwipeId = swipeId;
+            if (Array.isArray(msg.swipes)) {
+                const tagSource = parsedPayload.source;
+                for (let i = msg.swipes.length - 1; i >= 0; i--) {
+                    if (String(msg.swipes[i] || '').includes(tagSource)) {
+                        storeSwipeId = i;
+                        break;
+                    }
+                }
+            }
+
+            msg.extra.bb_social_swipes[storeSwipeId] = freshUpdates;
+
+            // Correct stale swipe_id so that the main loop in
+            // recalculateAllStats uses the right key — BUT only when
+            // the message is NOT being swiped.  If the last swipe slot
+            // is empty, the message is mid-generation and resetting
+            // swipe_id would corrupt ST's navigation state.
+            const lastSlotEmpty = Array.isArray(msg.swipes)
+                && msg.swipes.length > 0
+                && !String(msg.swipes[msg.swipes.length - 1] || '').trim();
+            if (storeSwipeId !== swipeId && !lastSlotEmpty) {
+                msg.swipe_id = storeSwipeId;
+            }
+            effectiveSwipeId = storeSwipeId;
+
             if (dedupedParsedUpdates.changed || userFilteredUpdates.changed) modified = true;
             currentMes = currentMes.replace(parsedPayload.source, '');
             if (trackDebug) {
@@ -2778,14 +3101,16 @@ export function scanAndCleanMessage(msg, messageId, trackDebug = false) {
         modified = true;
 
         const hasSwipeArray = Array.isArray(msg.swipes);
-        const hasExactSwipeSlot = hasSwipeArray && msg.swipes[swipeId] !== undefined;
-        const canCreateInitialSwipe = swipeId === 0 && (!hasSwipeArray || msg.swipes.length === 0);
+        const hasTargetSlot = hasSwipeArray && msg.swipes[effectiveSwipeId] !== undefined;
+        const canCreateInitialSwipe = effectiveSwipeId === 0 && (!hasSwipeArray || msg.swipes.length === 0);
 
+        // Write cleaned text into the CORRECT swipe slot (effectiveSwipeId),
+        // not the potentially stale swipe_id.  This preserves old swipe slots.
         // During a fresh swipe SillyTavern can update msg.mes before it adds the new
         // slot into msg.swipes. Falling back to swipes[0] here overwrites another
         // variant and makes different swipes collapse into identical text.
-        if (hasExactSwipeSlot) {
-            msg.swipes[swipeId] = msg.mes; 
+        if (hasTargetSlot) {
+            msg.swipes[effectiveSwipeId] = msg.mes; 
         } else if (canCreateInitialSwipe) {
             msg.swipes = [msg.mes]; 
         }
@@ -2857,6 +3182,14 @@ function recalculateAllStatsNow(isNewMessage = false) {
     if (needsSave && scopeState.snapshot_baseline) recordActivePersonaBranchState(true);
     setCurrentCalculatedStats(newStats);
     currentStoryMoments.length = 0;
+
+    const statsCutoffIndexDebug = Math.min(parseInt(scopeState.snapshot_cutoff_index, 10) || 0, (SillyTavern.getContext().chat || []).length);
+    console.warn('[BB VN][RECALC] scopeKey=' + scopeKey
+        + ' aliasSet=[' + [...aliasSet].join(',') + ']'
+        + ' cutoff=' + statsCutoffIndexDebug
+        + ' hasBaseline=' + !!scopeState.snapshot_baseline
+        + ' baselineChars=' + (scopeState.snapshot_baseline?.characters ? Object.keys(scopeState.snapshot_baseline.characters).length : 0));
+
     const snapshotBaseline = scopeState.snapshot_baseline && typeof scopeState.snapshot_baseline === 'object'
         ? scopeState.snapshot_baseline
         : null;
@@ -2934,7 +3267,7 @@ function recalculateAllStatsNow(isNewMessage = false) {
     }
 
     if (!chat || !chat.length) {
-        for (const [name, stats] of Object.entries(newStats)) applyMemoryEdits(stats, scopeKey, name);
+        for (const [name, stats] of Object.entries(newStats)) applyMemoryEdits(stats, scopeKey, name, resolveChatOriginUndo(chat, scopeState));
         renderHudCallback();
         injectCombinedSocialPrompt();
         return;
@@ -2956,7 +3289,8 @@ function recalculateAllStatsNow(isNewMessage = false) {
             latestChoiceContext = msg.extra.bb_vn_choice_context;
         }
 
-        if (scanAndCleanMessage(msg, idx, idx === lastAssistantIndex)) needsSave = true;
+        const scanModified = scanAndCleanMessage(msg, idx, idx === lastAssistantIndex);
+        if (scanModified) needsSave = true;
 
         const swipeId = msg.swipe_id || 0;
         const allowLegacyFallback = !Array.isArray(msg?.swipes) || msg.swipes.length <= 1;
@@ -3016,7 +3350,68 @@ function recalculateAllStatsNow(isNewMessage = false) {
             });
         }
 
-        let activeUpdates = getStoredSwipeEntries(msg.extra?.bb_social_swipes, swipeId, allowLegacyFallback);
+        const isLastAssistantMsg = idx === lastAssistantIndex;
+        let activeUpdates = getStoredSwipeEntries(
+            msg.extra?.bb_social_swipes,
+            swipeId,
+            isLastAssistantMsg ? false : allowLegacyFallback,
+        );
+
+        // Detect swipe-in-progress: if the last swipe slot is empty, the
+        // message is being swiped/regenerated.  Any stored data (whether
+        // under the exact swipeId key or a higher key from a previous
+        // heuristic match) belongs to a PREVIOUS swipe and must NOT leak
+        // into the current recalculation.  This is the core swipe-isolation
+        // invariant: when regenerating, the old result is invisible.
+        const isSwipeInProgress = isLastAssistantMsg
+            && Array.isArray(msg.swipes)
+            && msg.swipes.length > 0
+            && !String(msg.swipes[msg.swipes.length - 1] || '').trim();
+
+        // If scanAndCleanMessage just found fresh VNE tags for the last
+        // assistant message, the stored data belongs to the CURRENT
+        // generation — even if isSwipeInProgress is true (ST hasn't
+        // updated msg.swipes yet after GENERATION_ENDED), this data must
+        // NOT be discarded.  The guard only applies to STALE data from
+        // a previous swipe, not to data just parsed from the current one.
+        const hasFreshVneData = isLastAssistantMsg && scanModified;
+
+        if (activeUpdates && isSwipeInProgress && !hasFreshVneData) {
+            console.warn('[BB VN][RECALC] Swipe-in-progress guard: nullified activeUpdates for msg idx=' + idx
+                + ' swipeId=' + swipeId + ' swipesLen=' + (Array.isArray(msg.swipes) ? msg.swipes.length : '?'));
+            activeUpdates = null;
+        }
+
+        // Fallback: if exact swipeId key has no data, check if
+        // scanAndCleanMessage() stored it under a higher key (happens when
+        // msg.swipe_id was stale during parse — the tag-matching heuristic
+        // detected the correct slot and stored data there).  We only look
+        // at keys > swipeId, never at lower keys — those belong to older
+        // swipes and must never leak.
+        // This fallback is normally SKIPPED during swipe-in-progress because
+        // higher-key data would be from a previous swipe.  However, when
+        // scanAndCleanMessage just parsed fresh VNE tags (hasFreshVneData),
+        // the data at the higher key is from the CURRENT generation and
+        // must be used — otherwise deltas disappear until F5 refresh.
+        if (!activeUpdates && isLastAssistantMsg && msg.extra?.bb_social_swipes
+            && (!isSwipeInProgress || hasFreshVneData)) {
+            const swipesMap = msg.extra.bb_social_swipes;
+            let targetKey = -1;
+            for (const rawKey in swipesMap) {
+                const numKey = Number(rawKey);
+                if (!Number.isNaN(numKey) && numKey > swipeId && numKey > targetKey) {
+                    const candidate = swipesMap[rawKey];
+                    if (Array.isArray(candidate) && candidate.length > 0) {
+                        targetKey = numKey;
+                    }
+                }
+            }
+            if (targetKey > swipeId) {
+                activeUpdates = swipesMap[targetKey];
+                console.warn('[BB VN][RECALC] Fresh-VNE fallback: using data from key=' + targetKey
+                    + ' for msg idx=' + idx + ' (swipeId=' + swipeId + ' hasFreshVneData=' + hasFreshVneData + ')');
+            }
+        }
 
         if (activeUpdates && Array.isArray(activeUpdates)) {
             const userFilteredActiveUpdates = filterUserPersonaSocialUpdates(activeUpdates);
@@ -3149,6 +3544,25 @@ function recalculateAllStatsNow(isNewMessage = false) {
                 });
                 if (eventEdit?.disabled === true) {
                     trackEditorEntry(true);
+                    // A disabled event still proves the character was discovered
+                    // once — char_bases is written on first sight, so a known
+                    // character keeps an empty base-value card instead of
+                    // silently vanishing from the tracker. "Hide character"
+                    // remains the only way to remove a card (parity with
+                    // zero-point contacts, which keep their card too).
+                    if (!newStats[charName] && chat_metadata['bb_vn_char_bases']?.[charName] !== undefined) {
+                        const base = parseInt(chat_metadata['bb_vn_char_bases'][charName], 10);
+                        const baseRomance = parseInt(chat_metadata['bb_vn_char_bases_romance']?.[charName], 10);
+                        newStats[charName] = {
+                            affinity: Number.isFinite(base) ? base : 0,
+                            romance: Number.isFinite(baseRomance) ? baseRomance : 0,
+                            history: [],
+                            status: '',
+                            memories: { soft: [], deep: [], archive: [] },
+                            core_traits: [],
+                        };
+                        rememberRelationshipStart(newStats[charName], scopeState, charName);
+                    }
                     return;
                 }
 
@@ -3234,7 +3648,7 @@ function recalculateAllStatsNow(isNewMessage = false) {
                     });
                 }
                 recordedImpacts.forEach(impact => {
-                    appendCharacterMemory(newStats[charName], impact.delta, update.reason || "", moodlet, { allowDuplicate: isDebugInjected, source: sourceUpdate });
+                    appendCharacterMemory(newStats[charName], impact.delta, update.reason || "", moodlet, { allowDuplicate: isDebugInjected, source: sourceUpdate, affinityDelta: f_delta, romanceDelta: r_delta });
                 });
 
                 const previousTier = getTierInfo(previousAffinity).label;
@@ -3259,13 +3673,13 @@ function recalculateAllStatsNow(isNewMessage = false) {
                             const momentType = impact.kind === 'romance'
                                 ? (impact.delta > 0 ? 'romance-positive' : 'romance-negative')
                                 : (impact.delta > 0 ? 'soft-positive' : 'soft-negative');
-                            const moment = maybeAddStoryMoment({ type: momentType, char: charName, title: shift.full, text: `${charName}: ${update.reason}` });
+                            const moment = maybeAddStoryMoment({ type: momentType, char: charName, title: shift.full, text: `${charName}: ${update.reason}`, eventKey });
                             if (impact === dominantImpact) toastMoment = pickToastMoment(toastMoment, moment);
                             if (idx === chat.length - 1) queueLiveToastCandidate(liveToastCandidates, scopeKey, `${messageMeta}|${impact.kind}|${impact.delta}|soft`, moment);
                         }
 
                         if (Math.abs(impact.delta) >= 15) {
-                            const moment = maybeAddStoryMoment({ type: impact.delta > 0 ? 'deep-positive' : 'deep-negative', char: charName, title: 'Незабываемое событие', text: `${charName}: ${update.reason}` });
+                            const moment = maybeAddStoryMoment({ type: impact.delta > 0 ? 'deep-positive' : 'deep-negative', char: charName, title: 'Незабываемое событие', text: `${charName}: ${update.reason}`, eventKey });
                             if (impact === dominantImpact) toastMoment = pickToastMoment(toastMoment, moment);
                             if (idx === chat.length - 1) queueLiveToastCandidate(liveToastCandidates, scopeKey, `${messageMeta}|${impact.kind}|${impact.delta}|deep`, moment);
                         }
@@ -3282,7 +3696,7 @@ function recalculateAllStatsNow(isNewMessage = false) {
                     if (r_delta !== 0) pointsHtml += `<div class="bb-glog-points" style="color: #f472b6; border-color: rgba(244,114,182,0.35); background: rgba(190,24,93,0.28); margin-right: 4px; padding: 4px 10px; border-radius: 8px;">💖 Влечение: ${r_delta > 0 ? '+' : ''}${r_delta}</div>`;
                     const timeStr = getRelationshipEventTimestamp(update, msg);
                     const logText = `<div class="bb-glog-main" style="display: flex; flex-direction: column; align-items: flex-start; gap: 6px; width: 100%;"><span class="bb-glog-char">${escapeHtml(charName)}</span>${moodlet ? `<span class="bb-glog-delta" style="align-self: flex-start;">${escapeHtml(moodlet)}</span>` : ''}</div>${update.reason ? `<div class="bb-glog-reason" style="margin-top: 4px;">${escapeHtml(update.reason)}</div>` : ''}<div style="display:flex; flex-wrap:wrap; margin-top:6px;">${pointsHtml}</div>`;
-                    addGlobalLog(logType, logText, timeStr);
+                    addGlobalLog(logType, logText, timeStr, { eventKey });
                 }
             });
         }
@@ -3307,7 +3721,7 @@ function recalculateAllStatsNow(isNewMessage = false) {
         stats.memories.deep = newDeep;
     }
 
-    for (const [name, stats] of Object.entries(newStats)) applyMemoryEdits(stats, scopeKey, name);
+    for (const [name, stats] of Object.entries(newStats)) applyMemoryEdits(stats, scopeKey, name, resolveChatOriginUndo(chat, scopeState));
 
     if (isNewMessage && liveToastCandidates.length > 0) {
         liveToastCandidates
@@ -3330,6 +3744,18 @@ function recalculateAllStatsNow(isNewMessage = false) {
     saveActivePersonaCutoff();
     if (recordActivePersonaBranchState()) needsSave = true;
     if (needsSave) saveChatDebounced();
+
+    console.warn('[BB VN][RECALC] result: chars=' + Object.keys(newStats).length
+        + ' names=[' + Object.keys(newStats).join(',') + ']'
+        + ' needsSave=' + needsSave
+        + ' lastAssistantIdx=' + lastAssistantIndex
+        + (lastAssistantIndex >= 0 ? (' lastMsg.swipeId=' + (chat[lastAssistantIndex]?.swipe_id ?? '?')
+         + ' swipesLen=' + (Array.isArray(chat[lastAssistantIndex]?.swipes) ? chat[lastAssistantIndex].swipes.length : '?')
+         + ' lastSlotEmpty=' + (Array.isArray(chat[lastAssistantIndex]?.swipes) && chat[lastAssistantIndex].swipes.length > 0
+            ? !String(chat[lastAssistantIndex].swipes[chat[lastAssistantIndex].swipes.length - 1] || '').trim()
+            : 'N/A'))
+        : ''));
+
     injectCombinedSocialPrompt();
     renderHudCallback();
     if (typeof window['bbRenderMergeSuggestionsList'] === 'function') {

@@ -1262,17 +1262,23 @@ test('character navigation filters Unicode names and sorts without changing data
 });
 test('toolbar reorders existing cards, preserves drafts, saves preferences and resets search per scene',async()=>{
  const h=await harness();const api=await h.loadApi('./character-toolbar.js');
- function node(tag){return {tag,children:[],listeners:{},dataset:{},classList:{toggle(){}},append(...items){for(const item of items){this.children=this.children.filter(old=>old!==item);this.children.push(item);}},setAttribute(){},addEventListener(name,fn){this.listeners[name]=fn;},focus(){}};}
+ function node(tag){return {tag,children:[],listeners:{},dataset:{},classList:{toggle(){}},append(...items){for(const item of items){this.children=this.children.filter(old=>old!==item);this.children.push(item);}},setAttribute(key,value){this[key]=value;},addEventListener(name,fn){this.listeners[name]=fn;},focus(){}};}
  const doc={createElement:node};
  const stats={Alex:{affinity:2},Blair:{affinity:5}};const settings={};const context={chat:[],chatId:'toolbar-chat'};let saves=0;
  function mount(persona='A'){
   const cards=Object.keys(stats).map(name=>Object.assign(node('card'),{dataset:{char:name},draft:'Unsaved text'}));
   const stack=node('stack');stack.append(...cards);stack.querySelectorAll=()=>cards;
-  const root={ownerDocument:doc,children:[],querySelector:()=>stack,insertBefore(item){this.children.push(item);}};
+  const hero=node('hero');
+  const root={ownerDocument:doc,children:[hero,stack],querySelector(sel){return sel==='.bb-panel-hero'?hero:stack;},insertBefore(item,ref){const at=this.children.indexOf(ref);if(at===-1)this.children.push(item);else this.children.splice(at,0,item);}};
   api.mountCharacterToolbar(root,stats,settings,context,persona,()=>saves++);
-  const toolbar=root.children[0];return {cards,stack,search:toolbar.children[0].children[0],sort:toolbar.children[1].children[0],compact:toolbar.children[2].children[0],reset:toolbar.children[3],count:toolbar.children[4],empty:root.children[1]};
+  const disclosure=root.children[0];const toolbar=disclosure.children[1];
+  return {root,hero,cards,stack,disclosure,toggle:disclosure.children[0].children[0],search:toolbar.children[0].children[0],sort:toolbar.children[1].children[0],compact:toolbar.children[2].children[0],reset:toolbar.children[3],count:toolbar.children[4],empty:root.children[2]};
  }
- let view=mount();assert.equal(view.stack.children[0].dataset.char,'Blair');
+ let view=mount();
+ // The disclosure introduces the panel: it sits ABOVE the route hero, and the
+ // «Персонажи не найдены» empty state stays next to the card stack.
+ assert.equal(view.root.children[0],view.disclosure);assert.equal(view.root.children[1],view.hero);assert.equal(view.root.children[3].tag,'stack');
+ assert.equal(view.stack.children[0].dataset.char,'Blair');
  view.search.value='Alex';view.search.listeners.input();assert.equal(view.cards[1].hidden,true);assert.equal(view.cards[0].draft,'Unsaved text');
  view.sort.value='name';view.sort.listeners.change();assert.equal(settings.hudCharacterSort,'name');
  view.compact.checked=true;view.compact.listeners.change();assert.equal(settings.hudCompactCards,true);assert.equal(saves,2);
@@ -1283,6 +1289,141 @@ test('toolbar reorders existing cards, preserves drafts, saves preferences and r
  context.chat=[];view=mount();assert.equal(view.search.value,'');
  const many=Object.fromEntries(Array.from({length:500},(_,i)=>['Character '+i,{affinity:i%100}]));
  assert.equal(api.selectCharacterNames(many,'','name','en').length,500);
+ // «Поиск и сортировка» disclosure: tools start hidden, toggle opens them,
+ // the open state survives re-mounts, and the badge reflects active filters.
+ view=mount();assert.equal(view.toggle['aria-expanded'],'false');assert.equal(view.disclosure.children.length,2);
+ view.toggle.listeners.click();assert.equal(view.toggle['aria-expanded'],'true');
+ view=mount();assert.equal(view.toggle['aria-expanded'],'true');
+ view.toggle.listeners.click();assert.equal(view.toggle['aria-expanded'],'false');
+ view=mount();assert.equal(view.toggle['aria-expanded'],'false');
+ view.search.value='Alex';view.search.listeners.input();assert.equal(view.toggle.children[2].textContent,'1');
+ view.reset.listeners.click();assert.equal(view.toggle.children[2].textContent,'2');
+ view.sort.value='trust_desc';view.sort.listeners.change();assert.equal(view.toggle.children[2].textContent,'');
+});
+
+test('hidden popup survives restores and transplanted settings keep drawer chrome',async()=>{
+ const popup=await readFile(new URL('modules/toolbar-popup.js',root),'utf8');
+ // Restore clicks stop propagating before the list re-render detaches the
+ // clicked button, so they never reach the document outside-click closer...
+ assert.match(popup,/\.bb-toolbar-restore-btn'\)\.on\('click', function\(e\) \{[\s\S]{0,300}?e\.stopPropagation\(\);/);
+ assert.match(popup,/#bb-toolbar-restore-all'\)\.on\('click', \(e\) => \{[\s\S]{0,80}?e\.stopPropagation\(\);/);
+ // ...the re-render keeps the toolbar button as the popup anchor...
+ assert.match(popup,/openToolbarPopup\('hidden', activeToolbarBtn, true\);/);
+ // ...and a click whose target was detached mid-dispatch is not an outside click.
+ assert.match(popup,/!e\.target \|\| e\.target\.isConnected === false\) return;/);
+ const css=await readFile(new URL('style.css',root),'utf8');
+ // Settings sections/buttons transplanted into the toolbar popup reuse the
+ // exact drawer chrome through the shared :is(...) scope.
+ assert.ok(css.includes(':is(#bb-social-settings-wrapper, .bb-toolbar-popup-body) .bb-vn-settings-section'));
+ // The toggle animation holds inline overflow:hidden on the animated section,
+ // which zeroes its automatic flex min-height; without flex-shrink:0 the
+ // height-constrained popup body (flex column) would flatten the animated
+ // section to the height deficit instead of scrolling — the section visibly
+ // vanished together with its summary for the whole 260 ms toggle.
+ assert.match(css,/:is\(#bb-social-settings-wrapper, \.bb-toolbar-popup-body\) \.bb-vn-settings-section \{[^}]*flex-shrink: 0;/);
+ assert.ok(css.includes(':is(#bb-social-settings-wrapper, .bb-toolbar-popup-body) .bb-vn-settings-button'));
+ assert.ok(css.includes(':is(#bb-social-settings-wrapper, .bb-toolbar-popup-body) .bb-vn-settings-button--ghost'));
+ // Reset/clear secondary actions wear the ghost chrome with hover states, and
+ // the dev popup «Очистить журнал» matches the neutral restore-all chrome.
+ assert.match(css,/:is\(#bb-social-settings-wrapper, \.bb-toolbar-popup-body\) \.bb-vn-settings-button--ghost:hover \{[^}]*transform: translateY\(-1px\);/);
+ assert.match(css,/#bb-toolbar-clear-log:hover \{[^}]*transform: translateY\(-1px\);/);
+ const settingsCssSource=await readFile(new URL('modules/settings.js',root),'utf8');
+ assert.ok(settingsCssSource.includes('id="bb-vn-description-prompt-reset" class="menu_button bb-vn-settings-button bb-vn-settings-button--ghost"'));
+ assert.ok(settingsCssSource.includes('id="bb-vn-cfg-instructions-clear" class="menu_button bb-vn-settings-button bb-vn-settings-button--ghost"'));
+ // Switching popups (settings → dev → hidden) hot-swaps the content: the
+ // transplanted sections are returned, but the overlay keeps its .open state
+ // and nothing is torn down, so there is no close→reopen flicker...
+ assert.match(popup,/const switching = !keepActiveState && activeToolbarPopup !== null && activeToolbarPopup !== type;/);
+ assert.match(popup,/restoreTransplantedSections\(\);\n        activeToolbarPopup = type;/);
+ // ...and the viewport clamp runs synchronously (no next-frame requestAnimationFrame
+ // that painted one naive, unclamped popup position on every open/switch).
+ assert.doesNotMatch(popup,/requestAnimationFrame/);
+ // «Вернуть всех» in the toolbar hidden popup wears the same chrome as the
+ // identically-named button in the hidden-characters dialog.
+ assert.ok(css.includes('#bb-toolbar-restore-all'));
+ // Toolbar generator toggle wears the fork's two-state chrome: cyan glow while
+ // the generator is active, dimmed slate + diagonal slash watermark (pink hover)
+ // when off. The pre-port stray red .is-disabled rule must not come back.
+ assert.match(css,/\.bb-toolbar-btn--gen-toggle \{[^}]*color: #7dd3fc;/);
+ assert.match(css,/\.bb-toolbar-btn--gen-toggle:hover \{[^}]*border-color: rgba\(125, 211, 252, 0\.5\);/);
+ assert.match(css,/\.bb-toolbar-btn--gen-toggle\.is-disabled \{[^}]*opacity: 0\.72;/);
+ assert.match(css,/\.bb-toolbar-btn--gen-toggle\.is-disabled::after \{[^}]*rotate\(-32deg\);/);
+ assert.match(css,/\.bb-toolbar-btn--gen-toggle\.is-disabled:hover \{[^}]*color: #f472b6;/);
+ // The editor tool rows («По шаблону»/«Очистить» and the avatar actions) are
+ // centered within their section exactly like the fork's .bb-editor-actions-tight.
+ assert.match(css,/\.bb-editor-actions-tight \{[^}]*justify-content: center;/);
+ // Portrait workshop buttons wear extension chrome on top of the stock
+ // menu_button: neutral slate base (hover kept at :where() specificity so the
+ // segmented tabs and the sibling dialogs keep their own chrome), blue
+ // gradient primary, violet AI assist, compact red chip for reference rows
+ // and full red chrome for the gallery delete.
+ assert.match(css,/\.bb-portrait-dialog \.menu_button \{[^}]*background: linear-gradient\(180deg, rgba\(148,163,184,0\.10\), rgba\(148,163,184,0\.04\)\);/);
+ assert.match(css,/\.bb-portrait-dialog \.menu_button:where\(:hover:not\(:disabled\)\)/);
+ assert.match(css,/\.bb-portrait-dialog \.menu_button\.bb-portrait-primary \{[^}]*linear-gradient\(180deg, rgba\(59,130,246,0\.28\), rgba\(37,99,235,0\.14\)\);/);
+ assert.match(css,/\.bb-portrait-dialog \.bb-portrait-appearance-actions \.menu_button:first-child \{[^}]*color: #c4b5fd;/);
+ assert.match(css,/\.bb-portrait-dialog \.bb-portrait-ref \.menu_button \{[^}]*color: #fca5a5;/);
+ assert.match(css,/\.bb-portrait-dialog \.bb-portrait-gallery-actions > :last-child \{[^}]*background: rgba\(239,68,68,0\.12\);/);
+ // Generator disable hides the action bar instantly (no animated 200 ms window
+ // where «Действия VN» and «Генератор выключен» show together).
+ const generatorSource=await readFile(new URL('modules/generator.js',root),'utf8');
+ assert.ok(generatorSource.includes('syncOptionsVisibility(value, value);'));
+ // Relationship-status dialog buttons get extension chrome: neutral footer
+ // pills with a green primary «Сохранить».
+ const relStatusSource=await readFile(new URL('modules/relationship-status-ui.js',root),'utf8');
+ assert.ok(relStatusSource.includes('bb-relationship-save-btn'));
+ assert.ok(css.includes('.bb-portrait-dialog.bb-relationship-status-dialog footer .menu_button.bb-relationship-save-btn'));
+ assert.ok(css.includes('.bb-portrait-dialog.bb-relationship-status-dialog header .menu_button'));
+ // Memory pill editing keeps the delete affordance in its bottom-right slot:
+ // only the pencil hides, the button container pins its single remaining child
+ // to the corner (space-between would push it to the top).
+ const hudSource=await readFile(new URL('modules/hud.js',root),'utf8');
+ assert.match(css,/\.bb-memory-pill\.editing \.bb-memory-edit-btn \{ display: none; \}/);
+ assert.match(css,/\.bb-memory-pill\.editing \.bb-memory-pill-btns \{ justify-content: flex-end; \}/);
+ assert.doesNotMatch(css,/\.bb-memory-pill\.editing \.bb-memory-delete-btn/);
+ assert.ok(hudSource.includes("const editBtn = btns?.querySelector('.bb-memory-edit-btn');"));
+ assert.ok(hudSource.includes("if (editBtn) editBtn.style.display = 'none';"));
+ // Undo affordances: pills grow a violet ghost button in a bottom row left of
+ // the delete chip; diary cards get a violet chip stacked above the edit pencil
+ // (the same right column the 38px text padding already reserves, so the
+ // description box keeps its size); the journal inline-undo binding serves
+ // both surfaces, and both edit forms carry the undo chip.
+ assert.ok(hudSource.includes('class="bb-memory-undo-btn"'));
+ assert.ok(hudSource.includes("root.querySelectorAll('.bb-memory-pill .bb-memory-undo-btn')"));
+ assert.ok(hudSource.includes("root.querySelectorAll('.bb-glog-undo-inline, .bb-moment-undo-btn')"));
+ assert.ok(hudSource.includes('class="bb-moment-action-btn bb-moment-undo-btn"'));
+ assert.ok(hudSource.includes('buildRelationshipEventEditForm(entry, { withUndo: true })'));
+ // The pill text-span lookup must skip the new bottom-row wrapper (trait pills
+ // have no text span, so the row would otherwise be picked and hidden mid-edit).
+ assert.ok(hudSource.includes('span:not(.bb-memory-pill-btns):not(.bb-mem-deltas):not(.bb-memory-btn-row)'));
+ assert.match(css,/\.bb-memory-btn-row \{/);
+ assert.match(css,/\.bb-memory-undo-btn \{/);
+ assert.match(css,/\.bb-memory-undo-btn:hover \{ color: #c4b5fd; \}/);
+ assert.match(css,/\.bb-moment-action-btn\.bb-moment-undo-btn \{[^}]*bottom: 34px;/);
+ assert.match(css,/\.bb-memory-pill:has\(\.bb-memory-pill-btns\):not\(:has\(\.bb-mem-deltas\)\) \{[^}]*padding-right: 44px;/);
+ assert.match(css,/\.bb-memory-pill\.deep\.dual-tone span:not\(\.bb-memory-pill-btns\):not\(\.bb-mem-deltas\):not\(\.bb-memory-btn-row\)/);
+ // The event edit form grows a 4th danger chip (delete): it reuses the corner
+ // class but renders as a static 32px chip, and the while-editing hide rule is
+ // scoped to direct children so the form's own delete chip stays visible.
+ assert.ok(hudSource.includes('class="bb-glog-delete-btn bb-event-delete-btn"'));
+ assert.ok(hudSource.includes("form.querySelector('.bb-event-delete-btn')?.addEventListener"));
+ assert.match(css,/\.bb-glog-item\.event-editing > \.bb-glog-delete-btn \{ display: none; \}/);
+ assert.match(css,/\.bb-event-edit-actions \.bb-glog-delete-btn \{[^}]*position: static;[^}]*width: 32px;/);
+ // Section-body buttons (data/debug) share one dark slate chrome through a
+ // :where() rule; semantic accents moved from inline styles into variables.
+ assert.match(css,/:is\(#bb-social-settings-wrapper, \.bb-toolbar-popup-body\) :where\(\.bb-vn-settings-section-body \.menu_button\) \{/);
+ assert.match(css,/\.bb-vn-settings-button--danger:hover \{[^}]*transform: translateY\(-1px\);/);
+ for (const accent of ['bb-vn-accent-rose','bb-vn-accent-crimson','bb-vn-accent-leaf','bb-vn-accent-rust','bb-vn-accent-orchid','bb-vn-accent-blush','bb-vn-accent-sky','bb-vn-accent-violet']) {
+     assert.match(css, new RegExp('\\.' + accent + '\\s*\\{\\s*--bb-accent:'), accent);
+ }
+ const settingsSource=await readFile(new URL('modules/settings.js',root),'utf8');
+ assert.ok(settingsSource.includes('id="bb-dbg-add-pts" class="menu_button bb-vn-settings-button"'));
+ assert.ok(settingsSource.includes('class="menu_button bb-vn-settings-button bb-vn-accent-rose"'));
+ assert.ok(settingsSource.includes('bb-vn-accent-orchid bb-dbg-grid-full'));
+ assert.ok(settingsSource.includes('id="bb-social-clear-snapshot-btn" class="menu_button bb-vn-settings-button bb-vn-accent-blush"'));
+ assert.ok(settingsSource.includes('id="bb-dbg-reset-char" class="menu_button bb-vn-settings-button bb-vn-settings-button--danger"'));
+ // Inline accent styles are gone (hover states now work through CSS).
+ assert.doesNotMatch(settingsSource,/style="color:#f472b6/);
+ assert.doesNotMatch(settingsSource,/style="background: rgba\(239, 68, 68, 0\.2\)/);
 });
 
 
@@ -1339,7 +1480,11 @@ test('preferences settings save plain text and clear via the same input handler'
 
 
 test('settings containers retain column layout independently of snapshot buttons', async () => {
-    const css = (await readFile(new URL('style.css', root), 'utf8')).replace(/\/\*[\s\S]*?\*\//g, '');
+    const css = (await readFile(new URL('style.css', root), 'utf8'))
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        // The drawer and the toolbar popup share one scope via :is(...);
+        // match rules through the drawer (wrapper) side of that scope.
+        .replace(/:is\(#bb-social-settings-wrapper, \.bb-toolbar-popup-body\)/g, '#bb-social-settings-wrapper');
     const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)];
     const find = selector => rules.filter(([, selectors]) => selectors.split(',').some(s => s.trim() === selector));
     for (const name of ['card', 'panel']) {
@@ -1663,3 +1808,12 @@ for (const custom of [false, true]) {
         assert.deepEqual(h.errors, []);
     });
 }
+
+test('loading generator button click cancels the running options flow', async () => {
+    // The loading tooltip promises click-to-cancel and the flow's re-invocation
+    // branch implements it (generator.js) — the click handler must route there,
+    // otherwise the promised cancel silently does nothing while #mes_stop runs.
+    const src = await readFile(new URL('modules/actions.js', root), 'utf8');
+    assert.match(src, /invalidateVnOptionsGeneration,\n\s*setVnOptionsEnabled,\n\} from '\.\/generator\.js';/);
+    assert.match(src, /jQuery\('#bb-vn-btn-generate'\)\.on\('click', function\(\) \{\s*if \(jQuery\(this\)\.hasClass\('loading'\)\) \{\s*invalidateVnOptionsGeneration\(\);\s*notifyInfo\(t\('Генерация вариантов отменена'\)\);/);
+});

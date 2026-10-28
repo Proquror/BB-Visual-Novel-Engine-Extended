@@ -43,6 +43,28 @@ export function listRelationshipEvents(chat = null, scope = null) {
     }] : []);
 }
 
+/**
+ * Identity lookup of a tracked event by its raw source update record.
+ * Chat-origin memory pills are projections of a tracked event (same
+ * sourceUpdate), so their edit/delete/undo actions are routed here to keep
+ * pills, journal and diary in sync. canUndo is computed live from the
+ * current override state — entry snapshots go stale within one recalc.
+ */
+export function findRelationshipEventForSource(chat, scope, sourceUpdate) {
+    const index = entries.findIndex(entry => entry.chat === chat
+        && entry.scope === scope && entry.sourceUpdate === sourceUpdate);
+    if (index < 0) return null;
+    const entry = entries[index];
+    const edit = relationshipEventEdit(scope, entry.key, entry.signature);
+    return {
+        index, key: entry.key, revision, name: entry.name,
+        reason: entry.reason, mood: entry.mood,
+        friendshipDelta: entry.friendshipDelta, romanceDelta: entry.romanceDelta,
+        disabled: entry.disabled,
+        canUndo: Array.isArray(edit?.undo) && edit.undo.length > 0,
+    };
+}
+
 export function changeRelationshipEvent(scope, index, expectedRevision, action, values = {}) {
     if (revision !== expectedRevision || !entries[index] || entries[index].scope !== scope) throw new Error('EDITOR_STALE');
     const entry = entries[index];

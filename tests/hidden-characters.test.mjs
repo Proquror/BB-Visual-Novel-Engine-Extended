@@ -7,6 +7,8 @@ async function harness() {
     let names = ['Alex', '<Temari>'], current = true;
     class Node {
         constructor(tag) { this.tagName = tag; this.children = []; this.value = ''; this.listeners = {}; }
+        get textContent() { return this._text ?? this.children.map(node => node.textContent).join(''); }
+        set textContent(value) { this._text = value; }
         append(...nodes) { for (const node of nodes) { node.parent = this; this.children.push(node); } }
         replaceChildren(...nodes) { this.children = []; this.append(...nodes); }
         setAttribute(key,value) { this[key] = value; }
@@ -38,6 +40,9 @@ test('hidden manager filters, restores one or all, and remains open',async()=>{
     const search=h.nodes().find(n=>n.tagName==='input');search.value='temari';search.listeners.input();
     const rows=()=>h.nodes().filter(n=>n.className==='bb-hidden-row');
     assert.equal(rows().length,1);assert.equal(rows()[0].children[1].textContent,'<Temari>');
+    // Extension-style buttons: icon + label (matches the toolbar popup).
+    assert.equal(h.button('Вернуть').children[0].className,'fa-solid fa-arrow-up-from-bracket');
+    assert.equal(h.button('Вернуть всех').children[0].className,'fa-solid fa-arrows-rotate');
     h.button('Вернуть').click();assert.deepEqual(h.names,['Alex']);assert.equal(rows().length,0);
     h.button('Вернуть всех').click();assert.deepEqual(h.names,[]);
     assert.equal(h.button('Вернуть всех').disabled,true);

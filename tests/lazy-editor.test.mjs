@@ -46,8 +46,8 @@ test('opening creates the current editor once; closing and reopening preserve it
     const h = harness(), card = h.card();
     h.sandbox.setCharacterEditorOpen(card, true);
     assert.equal(card.appends, 1); assert.equal(h.audit.descriptions, 1); assert.equal(h.audit.previews, 1);
-    assert.match(card.html, /bb-edit-base-input" value="12"/);
-    assert.match(card.html, /bb-edit-romance-input" value="3"/);
+    assert.match(card.html, /bb-edit-base-input[^"]*" value="12"/);
+    assert.match(card.html, /bb-edit-romance-input[^"]*" value="3"/);
     assert.match(card.html, /bb-edit-platonic-cb" checked/);
     assert.match(card.html, /&lt;script&gt;Story&lt;\/script&gt;/); assert.doesNotMatch(card.html, /<script>/);
     assert.match(card.html, /SOURCE_SENTINEL/);

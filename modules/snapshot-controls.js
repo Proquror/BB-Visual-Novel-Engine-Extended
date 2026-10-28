@@ -9,6 +9,12 @@ import { escapeHtml } from './utils.js';
 const memoryKindLabel = kind => ({ soft: t('Мягкие следы'), deep: t('Незабываемые события'),
     archive: t('Архив'), trait: t('Черты характера') })[kind] || t('Память');
 
+// Zero-point events (0/0) never enter memories, journal, diary or prompt —
+// only their status may count. The editor marks them so users understand
+// why such an event has no visible effect outside the editor itself.
+const isZeroPointEventRecord = record => record?.kind === 'event' && record.disabled !== true
+    && (record.friendshipDelta ?? 0) === 0 && (record.romanceDelta ?? 0) === 0;
+
 export function listRelationshipEditorRecords(scope = {}) {
     const chat = globalThis.SillyTavern?.getContext?.()?.chat;
     const scopeKey = getCurrentPersonaScopeKey();
@@ -116,7 +122,7 @@ export function refreshSnapshotControls(scope = {}) {
         kind.className = 'bb-vn-snapshot-record-kind';
         kind.textContent = record.kind === 'character' ? `${t('Персонаж')} · ${t(record.readOnly ? 'Чат' : 'Импорт')}`
             : record.kind === 'memory' ? `${record.detail} · ${record.imported ? t('Импорт') : t('Чат')}${record.hidden ? ` · ${t('Удалено')}` : ''}`
-                : record.kind === 'event' ? `${t('Изменение')} · ${t('Чат')}${record.disabled ? ` · ${t('Отключено')}` : ''}`
+                : record.kind === 'event' ? `${t('Изменение')} · ${t('Чат')}${record.disabled ? ` · ${t('Отключено')}` : isZeroPointEventRecord(record) ? ` · ${t('Без баллов')}` : ''}`
                 : record.kind === 'log' ? `${t('Журнал')} #${record.number} · ${t('Импорт')}` : `${t('Момент')} · ${t('Импорт')}`;
         const title = document.createElement('strong');
         title.textContent = record.title;
@@ -195,8 +201,12 @@ export function refreshSnapshotControls(scope = {}) {
     for (const node of [text, label, hint, save]) if (node) node.hidden = !editing;
     if (label) label.textContent = selected?.kind === 'event' ? t('Причина изменения') : t('Текст записи');
     if (hint) hint.textContent = selected?.kind === 'event'
-        ? t('Правка события пересчитает баллы отношений, память и журнал.')
-        : t('Правки памяти и черт не меняют баллы отношений и журнал.');
+        ? (isZeroPointEventRecord(selected)
+            ? `${t('У события нулевые баллы: оно не попадает в память, журнал, дневник и промпт — учитывается только статус, если событие его задало. Задайте баллы, чтобы событие заработало.')}\n${t('Правка события пересчитает баллы отношений, память и журнал.')}`
+            : t('Правка события пересчитает баллы отношений, память и журнал.'))
+        : selected?.kind === 'memory' && !selected.imported && selected.memoryKind !== 'trait'
+            ? t('Правка следа применится к событию: синхронно обновятся журнал, дневник и баллы отношений.')
+            : t('Правки памяти и черт не меняют баллы отношений и журнал.');
     if (save) save.textContent = selected?.kind === 'event' ? t('Сохранить изменение') : t('Сохранить текст');
     if (text) {
         if (text.dataset.record !== list.dataset.selected || text.dataset.revision !== String(selected?.revision)) {

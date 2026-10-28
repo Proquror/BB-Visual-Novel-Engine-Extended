@@ -1,9 +1,9 @@
 {
-    "name": "BB-Visual-Novel",
-    "display_name": "BB Visual Novel Engine",
-    "description": "Cистема отношений, визуальная новелла и генерация ответов.",
-    "version": "3.2.2 Release",
-    "author": "BruniikBron",
+    "name": "BB-Visual-Novel-Extended",
+    "display_name": "BB Visual Novel Engine Extended",
+    "description": "Cистема отношений, визуальная новелла и генерация ответов. Extended-сборка: изоляция свайпов, снапшоты v2 с полным пересчётом, редактирование событий, тулбар HUD и кастомные инструкции промпта.",
+    "version": "3.5.0 Release",
+    "author": "BruniikBron, maxkara14 (mod by Proquror)",
     "js": "index.js",
     "css": "style.css",
     "requires": []

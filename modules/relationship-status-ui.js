@@ -12,8 +12,8 @@ export function openRelationshipStatusEditor(charName) {
     };
     const dialog = node('dialog', '', 'bb-portrait-dialog bb-relationship-status-dialog');
     const close = () => { dialog.close(); dialog.remove(); };
-    const button = (text, action) => {
-        const element = node('button', t(text), 'menu_button');
+    const button = (text, action, className = '') => {
+        const element = node('button', t(text), className ? `menu_button ${className}` : 'menu_button');
         element.type = 'button';
         element.addEventListener('click', action);
         return element;
@@ -41,13 +41,15 @@ export function openRelationshipStatusEditor(charName) {
         close();
     };
     const footer = node('footer');
-    footer.append(button('Автоматически', () => save('')), button('Сохранить', () => {
-        if (!input.value.trim()) {
-            status.textContent = t('Введите статус или выберите «Автоматически».');
-            input.focus(); return;
-        }
-        save(input.value);
-    }));
+    footer.append(
+        button('Автоматически', () => save('')),
+        button('Сохранить', () => {
+            if (!input.value.trim()) {
+                status.textContent = t('Введите статус или выберите «Автоматически».');
+                input.focus(); return;
+            }
+            save(input.value);
+        }, 'bb-relationship-save-btn'));
     dialog.addEventListener('cancel', event => { event.preventDefault(); close(); });
     dialog.append(header, label, hint, suggestion, status, footer);
     document.body.append(dialog); dialog.showModal(); input.focus();

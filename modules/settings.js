@@ -8,7 +8,7 @@ import { t, ui, normalizeUiLanguage } from './i18n.js';
 import { chat_metadata, saveChatDebounced, saveSettingsDebounced } from '../../../../../script.js';
 import { extension_settings } from '../../../../extensions.js';
 import { MODULE_NAME, normalizeVnContextMessages, normalizeImpactSettings, normalizeImpactValue, normalizeVnReplyLength, resolveImpactScaleSettings } from './constants.js';
-import { recalculateAllStats, injectCombinedSocialPrompt, addGlobalLog, bindActivePersonaState, recordActivePersonaBranchState, getCurrentPersonaScopeKey, mergeCharacterRecords, resolveCharacterIdentity, exportActivePersonaSnapshot, importActivePersonaSnapshot, clearActivePersonaSnapshot, markSnapshotReplayMessage, getLatestAssistantMessageEntry } from './social.js';
+import { recalculateAllStats, injectCombinedSocialPrompt, addGlobalLog, bindActivePersonaState, recordActivePersonaBranchState, getCurrentPersonaScopeKey, mergeCharacterRecords, resolveCharacterIdentity, exportActivePersonaSnapshot, importActivePersonaSnapshot, clearActivePersonaSnapshot, markSnapshotReplayMessage, getLatestAssistantMessageEntry, applyMemoryEntryAction, memoryRecordEvent } from './social.js';
 import { notifySuccess, notifyInfo, notifyError, showHudToast } from './toasts.js';
 import { restoreVNOptions, setVnOptionsEnabled, clearSavedVNOptions, invalidateVnOptionsGeneration } from './generator.js';
 import { normalizeRequestTimeout, normalizeCustomApiMaxTokens, normalizeRequestError, getCustomApiIdentity } from './requests.js';
@@ -18,7 +18,6 @@ import { normalizeOutputLanguage } from './language.js';
 import { confirmSnapshotFile, confirmSnapshotRemoval, parseSnapshot } from './snapshot.js';
 import { captureImageContext, createImageStore, imageMetadataRoots, collectInlineImages, externalizeImages, embedSnapshotImages } from './image-storage.js';
 import { removeSnapshotRecord, undoSnapshotRecordRemoval } from './snapshot-records.js';
-import { changeMemoryEntry } from './memory-editor.js';
 import { changeRelationshipEvent } from './relationship-event-editor.js';
 import { confirmHistoryReset } from './history-reset.js';
 import { mountVnConnectionControls } from './connection-ui.js';
@@ -61,7 +60,7 @@ function renderMergeSuggestionsList() {
 
     container.html(suggestions.map(item => {
         const score = Math.round(Number(item.score || 0) * 100);
-        return ui`<button type="button" class="menu_button bb-dbg-merge-suggestion" data-from="${escapeHtml(item.source)}" data-to="${escapeHtml(item.target)}" style="text-align:left; width:100%; margin-top:6px; border-color: rgba(192, 132, 252, 0.22); color: #ddd6fe;">
+        return ui`<button type="button" class="menu_button bb-vn-settings-button bb-vn-accent-violet bb-dbg-merge-suggestion" data-from="${escapeHtml(item.source)}" data-to="${escapeHtml(item.target)}">
             <span style="display:block; font-size:11px; color:#c4b5fd;">Кандидат на объединение · ${score}%</span>
             <strong style="display:block; color:#f8fafc;">${escapeHtml(item.source)}</strong>
             <span style="display:block; font-size:12px; color:#94a3b8;">→ ${escapeHtml(item.target)}</span>
@@ -315,13 +314,13 @@ export function setupExtensionSettings() {
                                     <label for="bb-vn-description-prompt">Инструкция для описания</label>
                                     <textarea id="bb-vn-description-prompt" class="text_pole" rows="8" maxlength="8000"></textarea>
                                     <span class="bb-vn-settings-note">Для кнопки «По шаблону» у всех персонажей. Контекст и язык добавляются автоматически. Пустое поле использует стандартный промпт.</span>
-                                    <button type="button" id="bb-vn-description-prompt-reset" class="menu_button bb-vn-settings-button">Восстановить стандартный</button>
+                                    <button type="button" id="bb-vn-description-prompt-reset" class="menu_button bb-vn-settings-button bb-vn-settings-button--ghost">Восстановить стандартный</button>
                                 </div>
                             </details>
                             <label for="bb-vn-cfg-instructions">Постоянные пожелания к вариантам</label>
                             <textarea id="bb-vn-cfg-instructions" class="text_pole" rows="4" maxlength="4000"></textarea>
                             <span class="bb-vn-settings-note">Для вариантов во всех чатах, до 4000 символов. Разовая подсказка уточняет пожелания; язык и формат ответа сохраняются. Не применяется к профилям и чертам.</span>
-                            <button type="button" id="bb-vn-cfg-instructions-clear" class="menu_button" style="width: 100%; white-space: normal;">Очистить пожелания</button>
+                            <button type="button" id="bb-vn-cfg-instructions-clear" class="menu_button bb-vn-settings-button bb-vn-settings-button--ghost">Очистить пожелания</button>
                             <label for="bb-vn-cfg-reply-length" class="bb-vn-settings-panel-label">Длина VN-ответа</label>
                             <select id="bb-vn-cfg-reply-length" class="text_pole">
                                 <option value="short" ${selectedReplyLength === 'short' ? 'selected' : ''}>Короткий - быстрый темп</option>
@@ -381,6 +380,9 @@ export function setupExtensionSettings() {
                     <summary><i class="fa-solid fa-heart bb-vn-section-icon" aria-hidden="true"></i><span>Отношения</span></summary>
                     <div class="bb-vn-settings-section-body">
                         <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-disable-tracker" ${s.disableRelationshipTracker ? 'checked' : ''}><span>Отключить трекер отношений</span></label>
+                        <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-card-click-expand" ${s.hudCardClickExpand !== false ? 'checked' : ''}><span>Кликабельность карточки</span></label>
+                        <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-moment-antialiased" ${s.momentAntialiased !== false ? 'checked' : ''}><span>Сглаживание текста в Дневнике</span></label>
+                        <label class="checkbox_label bb-vn-setting-pill"><input type="checkbox" id="bb-vn-cfg-moment-force-gpu" ${s.momentForceGPU === true ? 'checked' : ''}><span>Принудительный GPU-рендеринг карточек</span></label>
                         <label class="checkbox_label bb-vn-setting-pill bb-vn-setting-pill--single"><input type="checkbox" id="bb-vn-cfg-usemacro" ${s.useMacro ? 'checked' : ''}><span>Использовать макрос {{bb_vn}}</span></label>
 
                         <span class="bb-vn-settings-note">Здесь вы можете задать свои значения для шкал дружбы и романтики. После изменения отношения сразу пересчитываются по всей истории.</span>
@@ -402,7 +404,7 @@ export function setupExtensionSettings() {
                                 <button id="bb-social-export-btn" class="menu_button bb-vn-settings-button"><i class="fa-solid fa-file-export" aria-hidden="true"></i><span>Экспорт</span></button>
                                 <button id="bb-social-import-btn" class="menu_button bb-vn-settings-button"><i class="fa-solid fa-file-import" aria-hidden="true"></i><span>Импорт</span></button>
                             </div>
-                            <button id="bb-social-clear-snapshot-btn" class="menu_button bb-vn-settings-button" style="color:#fda4af; border-color:rgba(244,114,182,0.22);">Убрать импортированную основу</button>
+                            <button id="bb-social-clear-snapshot-btn" class="menu_button bb-vn-settings-button bb-vn-accent-blush">Убрать импортированную основу</button>
                             <button id="bb-social-store-images-btn" class="menu_button bb-vn-settings-button">Перенести изображения из чата в файлы</button>
                             <span class="bb-vn-settings-note">Уменьшает данные чата, сохраняя картинки на сервере Таверны. Перед переносом скачивается резервная копия чата. Для переноса между серверами используйте экспорт snapshot.</span>
                         </div>
@@ -448,24 +450,24 @@ export function setupExtensionSettings() {
                         <input type="text" id="bb-debug-char-name" class="text_pole" placeholder="Имя персонажа">
                         <input type="text" id="bb-debug-reason" class="text_pole" placeholder="Текст причины" value="Дебаг-действие">
                         <div class="bb-vn-settings-actions-grid">
-                            <button id="bb-dbg-add-pts" class="menu_button">➕ Дружба</button>
-                            <button id="bb-dbg-sub-pts" class="menu_button">➖ Дружба</button>
-                            <button id="bb-dbg-add-romance" class="menu_button" style="color:#f472b6; border-color:rgba(244,114,182,0.3);">💖 Романтика</button>
-                            <button id="bb-dbg-sub-romance" class="menu_button" style="color:#e11d48; border-color:rgba(225,29,72,0.3);">💔 Романтика</button>
-                            <button id="bb-dbg-add-deep-pos" class="menu_button" style="color:#86efac; border-color:rgba(74,222,128,0.3);">🟢 Глубокий светлый</button>
-                            <button id="bb-dbg-add-deep-neg" class="menu_button" style="color:#fca5a5; border-color:rgba(251,113,133,0.3);">🔴 Глубокий мрачный</button>
-                            <button id="bb-dbg-add-deep-mixed" class="menu_button" style="grid-column:1 / -1; color:#f9a8d4; border-color:rgba(244,114,182,0.28);">🌓 Смешанное +20/-20</button>
-                            <button id="bb-dbg-add-trait-pos" class="menu_button" style="color:#86efac; border-color:rgba(74,222,128,0.3);">💎 Светлая черта</button>
-                            <button id="bb-dbg-add-trait-neg" class="menu_button" style="color:#fca5a5; border-color:rgba(251,113,133,0.3);">💎 Мрачная черта</button>
+                            <button id="bb-dbg-add-pts" class="menu_button bb-vn-settings-button">➕ Дружба</button>
+                            <button id="bb-dbg-sub-pts" class="menu_button bb-vn-settings-button">➖ Дружба</button>
+                            <button id="bb-dbg-add-romance" class="menu_button bb-vn-settings-button bb-vn-accent-rose">💖 Романтика</button>
+                            <button id="bb-dbg-sub-romance" class="menu_button bb-vn-settings-button bb-vn-accent-crimson">💔 Романтика</button>
+                            <button id="bb-dbg-add-deep-pos" class="menu_button bb-vn-settings-button bb-vn-accent-leaf">🟢 Глубокий светлый</button>
+                            <button id="bb-dbg-add-deep-neg" class="menu_button bb-vn-settings-button bb-vn-accent-rust">🔴 Глубокий мрачный</button>
+                            <button id="bb-dbg-add-deep-mixed" class="menu_button bb-vn-settings-button bb-vn-accent-orchid bb-dbg-grid-full">🌓 Смешанное +20/-20</button>
+                            <button id="bb-dbg-add-trait-pos" class="menu_button bb-vn-settings-button bb-vn-accent-leaf">💎 Светлая черта</button>
+                            <button id="bb-dbg-add-trait-neg" class="menu_button bb-vn-settings-button bb-vn-accent-rust">💎 Мрачная черта</button>
                         </div>
-                        <button id="bb-dbg-set-status" class="menu_button bb-vn-settings-button" style="color:#93c5fd; border-color:rgba(147,197,253,0.3);">🔄 Изменить статус к вам</button>
+                        <button id="bb-dbg-set-status" class="menu_button bb-vn-settings-button bb-vn-accent-sky">🔄 Изменить статус к вам</button>
                         <hr class="bb-vn-settings-divider">
                         <span class="bb-vn-settings-section-title bb-vn-settings-section-title--small">🧬 Слияние дубликатов</span>
                         <div class="bb-vn-settings-split"><input type="text" id="bb-dbg-merge-from" class="text_pole" placeholder="Кого"><input type="text" id="bb-dbg-merge-to" class="text_pole" placeholder="В кого"></div>
-                        <button id="bb-dbg-btn-merge" class="menu_button bb-vn-settings-button" style="color:#c084fc; border-color:rgba(192, 132, 252, 0.3);"><i class="fa-solid fa-code-merge"></i>&ensp; Слить в одного</button>
+                        <button id="bb-dbg-btn-merge" class="menu_button bb-vn-settings-button bb-vn-accent-violet"><i class="fa-solid fa-code-merge"></i>&ensp; Слить в одного</button>
                         <div id="bb-dbg-merge-suggestions" style="display:flex; flex-direction:column; gap: 0; margin-top: 4px;"></div>
                         <hr class="bb-vn-settings-divider">
-                        <button id="bb-dbg-reset-char" class="menu_button bb-vn-settings-button" style="background: rgba(239, 68, 68, 0.2); color: #ef4444; border-color: #ef4444;">💀 Полностью обнулить персонажа</button>
+                        <button id="bb-dbg-reset-char" class="menu_button bb-vn-settings-button bb-vn-settings-button--danger">💀 Полностью обнулить персонажа</button>
                         <button id="bb-dbg-toast" class="menu_button bb-vn-settings-button"><i class="fa-solid fa-bell"></i>&ensp; Рандомное уведомление</button>
                     </div>
                 </details>
@@ -644,6 +646,22 @@ export function setupExtensionSettings() {
         recalculateAllStats(false);
         if (typeof window.updateHudVisibility === 'function') window.updateHudVisibility();
         if (typeof window.renderSocialHud === 'function') window.renderSocialHud();
+    });
+    jQuery('#bb-vn-cfg-card-click-expand').on('change', function() {
+        extension_settings[MODULE_NAME].hudCardClickExpand = jQuery(this).is(':checked');
+        saveSettingsDebounced();
+        // Re-render so the card click binding follows the new preference.
+        if (typeof window.renderSocialHud === 'function') window.renderSocialHud();
+    });
+    jQuery('#bb-vn-cfg-moment-antialiased').on('change', function() {
+        extension_settings[MODULE_NAME].momentAntialiased = jQuery(this).is(':checked');
+        saveSettingsDebounced();
+        applyMomentRenderClasses();
+    });
+    jQuery('#bb-vn-cfg-moment-force-gpu').on('change', function() {
+        extension_settings[MODULE_NAME].momentForceGPU = jQuery(this).is(':checked');
+        saveSettingsDebounced();
+        applyMomentRenderClasses();
     });
     jQuery('#bb-vn-cfg-reply-length').on('change', function() {
         extension_settings[MODULE_NAME].vnReplyLength = normalizeVnReplyLength(jQuery(this).val());
@@ -1011,7 +1029,7 @@ export function setupExtensionSettings() {
             refreshSnapshotControls(bindActivePersonaState().scopeState);
             saveChatDebounced();
             recalculateAllStats(false);
-            notifySuccess(ui`Snapshot импортирован: ${result.characters} персонажей. Старые события до точки импорта больше не наслаиваются повторно.`);
+            notifySuccess(ui`Snapshot импортирован: ${result.characters} персонажей.${result.hasRawUpdates ? ' Сырые данные восстановлены, выполнен полный пересчёт от начала чата.' : ' Старые события до точки импорта больше не наслаиваются повторно.'}`);
         } catch (error) {
             console.error('[BB VN] Snapshot import failed.');
             const messages = {
@@ -1076,13 +1094,15 @@ export function setupExtensionSettings() {
         if (record?.kind !== 'memory' || (record.hidden && action !== 'undo')) return;
         const value = document.querySelector('#bb-social-snapshot-record-text')?.value || '';
         try {
-            if (action === 'delete' && await context.callPopup(escapeHtml(t('Удалить запись из памяти? Баллы отношений и журнал останутся прежними. Удаление можно отменить.')), 'confirm') !== true) return;
+            if (action === 'delete' && await context.callPopup(escapeHtml(t(memoryRecordEvent(record)
+                ? 'Событие будет удалено из журнала и дневника, баллы отношений пересчитаются. Удаление можно отменить.'
+                : 'Удалить запись из памяти? Баллы отношений и журнал останутся прежними. Удаление можно отменить.')), 'confirm') !== true) return;
             const current = SillyTavern.getContext();
             if (current.chat !== chat || current.chatId !== chatId || getCurrentPersonaScopeKey() !== persona
                 || bindActivePersonaState().scopeState !== scope
                 || JSON.stringify(current.chat?.map(message => [message.mes, message.swipe_id])) !== scene
                 || selectedEditorRecord(scope)?.kind !== 'memory' || selectedEditorRecord(scope)?.key !== record.key) throw new Error('EDITOR_STALE');
-            if (!changeMemoryEntry(record.index, record.revision, action, value)) return;
+            if (!applyMemoryEntryAction(record, action, value)) return;
             if (record.imported) recordActivePersonaBranchState(true);
             saveChatDebounced();
             recalculateAllStats(false);
@@ -1211,4 +1231,12 @@ export function setupExtensionSettings() {
         }
     });
     renderMergeSuggestionsList();
+}
+
+export function applyMomentRenderClasses() {
+    const s = extension_settings[MODULE_NAME];
+    const hud = document.getElementById('bb-social-hud');
+    if (!hud) return;
+    hud.classList.toggle('bb-hud-moment-antialiased', s.momentAntialiased !== false);
+    hud.classList.toggle('bb-hud-moment-force-gpu', s.momentForceGPU === true);
 }

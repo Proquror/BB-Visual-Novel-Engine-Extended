@@ -55,7 +55,9 @@ export function parseSnapshot(raw) {
     const wrapped = ['data', 'module', 'schema_version'].some(key => own(snapshot, key));
     if (wrapped) {
         if (snapshot.module !== MODULE_NAME) fail('SNAPSHOT_WRONG_MODULE');
-        if (snapshot.schema_version !== 1) fail('SNAPSHOT_UNSUPPORTED_VERSION');
+        // v1 — aggregated baseline snapshot; v2 — additionally carries raw
+        // per-message swipe data (raw_message_updates) for a full replay.
+        if (snapshot.schema_version !== 1 && snapshot.schema_version !== 2) fail('SNAPSHOT_UNSUPPORTED_VERSION');
         object(snapshot.data);
         if (own(snapshot, 'source_chat_length') && (!Number.isInteger(snapshot.source_chat_length) || snapshot.source_chat_length < 0)) fail();
     }
@@ -85,14 +87,40 @@ export function parseSnapshot(raw) {
     if (own(data, 'merge_suggestions')) array(data.merge_suggestions, entry => {
         fields(entry, ['source', 'target', 'target_id'], ['score', 'at']); string(entry.source); string(entry.target);
     });
-    if (own(data, 'global_log')) array(data.global_log, entry => { fields(entry, ['time', 'type', 'text']); string(entry.text); });
+    if (own(data, 'global_log')) array(data.global_log, entry => { fields(entry, ['time', 'type', 'text', 'eventKey']); string(entry.text); });
     if (own(data, 'story_moments')) array(data.story_moments, entry => {
-        fields(entry, ['type', 'char', 'title', 'text']); string(entry.title); string(entry.text);
+        fields(entry, ['type', 'char', 'title', 'text', 'eventKey']); string(entry.title); string(entry.text);
     });
+    // v2 raw payload: per-message swipe maps that restore the chat's own
+    // VNE data so the import can fully replay the history.
+    let rawMessages = 0;
+    if (own(data, 'raw_message_updates')) {
+        object(data.raw_message_updates);
+        if (Object.keys(data.raw_message_updates).length > 10000) fail();
+        let rawEntries = 0;
+        for (const [index, perMessage] of Object.entries(data.raw_message_updates)) {
+            if (!/^\d{1,7}$/.test(index)) fail();
+            object(perMessage);
+            for (const key of ['bb_social_swipes', 'bb_vn_char_traits_swipes']) {
+                if (!own(perMessage, key)) continue;
+                object(perMessage[key]);
+                for (const [swipeId, updates] of Object.entries(perMessage[key])) {
+                    if (!/^\d{1,5}$/.test(swipeId)) fail();
+                    if (!Array.isArray(updates) || updates.length > 200) fail();
+                    rawEntries += updates.length;
+                    updates.forEach(update => { if (!record(update)) fail(); });
+                }
+            }
+            rawMessages++;
+            if (rawEntries > 50000) fail();
+        }
+        if (snapshot.schema_version !== 2) fail('SNAPSHOT_UNSUPPORTED_VERSION');
+    }
     return {
         snapshot, data,
         summary: {
-            format: wrapped ? 'v1' : 'legacy', persona: wrapped ? snapshot.persona_label || '' : '',
+            format: wrapped ? (snapshot.schema_version === 2 ? 'v2' : 'v1') : 'legacy', persona: wrapped ? snapshot.persona_label || '' : '',
+            rawMessages,
             exportedAt: wrapped ? snapshot.exported_at || '' : '',
             characters: names.size, logs: data.global_log?.length || 0, moments: data.story_moments?.length || 0,
         },

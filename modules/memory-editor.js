@@ -20,10 +20,21 @@ function editState(binding, scope) {
     return binding.source.bb_vn_text_edits?.[scope]?.[binding.slot] || {};
 }
 
-export function applyMemoryEdits(stats, scope, name) {
+export function applyMemoryEdits(stats, scope, name, resolveChatOriginUndo = null) {
     const apply = (records, kind) => (records || []).flatMap(record => {
         const binding = bindings.get(record);
         if (!binding) return [record];
+        if (kind !== 'trait' && binding.origin !== 'snapshot') {
+            // Chat-origin memories are projections of a relationship event:
+            // text and visibility are owned by the event editor so journal,
+            // diary and pills stay in sync. Legacy bb_vn_text_edits overlays
+            // on the source update are deliberately not applied anymore —
+            // they used to pin pills against journal-side edits.
+            const eventUndo = typeof resolveChatOriginUndo === 'function'
+                && resolveChatOriginUndo(binding.source) === true;
+            entries.push({ binding, scope, name, kind, text: record[binding.field], hidden: false, canUndo: eventUndo });
+            return [{ ...record }];
+        }
         const state = editState(binding, scope);
         const text = typeof state.text === 'string' ? state.text : record[binding.field];
         entries.push({ binding, scope, name, kind, text, hidden: state.hidden === true, canUndo: Array.isArray(state.undo) && state.undo.length > 0 });
@@ -39,6 +50,23 @@ export function memoryEditorEntries(name) {
     return entries.flatMap((entry, index) => entry.name === name
         ? [{ index, revision, kind: entry.kind, text: entry.text, hidden: entry.hidden, canUndo: entry.canUndo, imported: entry.binding.origin === 'snapshot' }]
         : []);
+}
+
+/**
+ * Binding metadata for the action router (applyMemoryEntryAction in
+ * social.js): chat-origin soft/deep/archive records are routed to the
+ * relationship-event engine; traits and snapshot records stay here.
+ * Pass the record's revision to refuse lookups from a stale snapshot —
+ * recalculation re-tracks entries and shifts indices.
+ */
+export function memoryEntryMeta(index, expectedRevision = null) {
+    if (expectedRevision !== null && expectedRevision !== revision) return null;
+    const entry = entries[index];
+    if (!entry) return null;
+    return {
+        source: entry.binding.source, origin: entry.binding.origin,
+        kind: entry.kind, scope: entry.scope, name: entry.name,
+    };
 }
 
 export function allMemoryEditorEntries(chat = null, scope = null) {

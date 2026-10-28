@@ -4,6 +4,45 @@
 
 ## Русский
 
+### 3.5.0 Extended — 28 октября 2026
+
+Сборка Extended переезжает на свежую основу оригинала ([maxkara14/BB-Visual-Novel-Engine](https://github.com/maxkara14/BB-Visual-Novel-Engine), состояние на 24 октября) и объединяет обе линии разработки: все функции Extended 3.2–3.4 перенесены на новую основу и дополнены улучшениями оригинала. Ключи настроек и данных чатов не менялись — при обновлении с 3.4 данные отношений и почти все настройки подхватываются автоматически (положение тумблера генератора стоит проверить).
+
+**Пришло из оригинала (накоплено с мая):**
+
+- Мастерская портретов: параметры GPT Image (разрешение, пропорции, качество, точный размер, `xhigh`/`max` для 2.5) и Grok; подключения OpenAI Images, OpenAI Chat, Gemini, Naistera; галерея с сохранением генераций по чату, персоне и персонажу.
+- Единый редактор отношений в разделе «Данные»: правка изменений из чата (причина, эмоция, баллы), правка и скрытие памяти и черт, удаление лишних персонажей, строк журнала и моментов из импортированной основы; отмена до 20 шагов.
+- Хранение аватаров и исходников файлами на сервере Таверны вместо встраивания в чат; перенос старых встроенных изображений в файлы с побайтовой проверкой и JSONL-резервной копией.
+- Ветки чата получают отношения на выбранном сообщении; более поздние импорты и правки родительского чата в них не переносятся.
+- Ручные статусы отношений с приоритетом над моделью; нейтральные контакты без начисления баллов; изоляция карточек персонажей от совпадающих имён из других историй.
+- Русский и английский интерфейс; оптимизации пересчётов и кэширование; контекст карты BB Interactive Map 2.0 для генерации вариантов.
+
+**Extended поверх оригинала:**
+
+- Тулбар HUD с плавающими поп-апами: настройки, консоль разработчика, скрытые персонажи, экспорт/импорт и генератор больше не требуют раскрытия меню SillyTavern.
+- Отключение трекера отношений кликом по индикатору статуса; отключение генератора вариантов кнопкой у поля ввода, тумблером в тулбаре или в настройках.
+- Правка и отключение событий прямо в журнале, дневнике и карточке персонажа. Правка следа в любом из трёх мест — память, журнал, дневник — синхронно обновляет остальные; действия недеструктивны и имеют многоуровневую отмену. Все подтверждения отключения (журнал, дневник, плашка памяти) используют один заголовок «Отключить событие?» и подсказывают путь возврата.
+- Редактор отношений помечает события с нулевыми баллами (0/0) ярлыком «Без баллов» и при выборе объясняет: такие события не попадают в память, журнал, дневник и промпт — учитывается только заданный ими статус.
+- Кнопки отмены последней правки у каждого события в журнале и дневнике (в карточке дневника — фиолетовый чип над карандашом, текст записи не сужается) и у записей памяти и черт в карточке персонажа (слева от удаления): откатить правку можно там же, где она сделана, не открывая форму редактирования.
+- Редактор инструкций социального промпта: переопределяемые инструкции (бейдж «кастом») и автоматически собираемые данные персонажей в раздельном просмотре.
+- Снимки v2: экспорт сырых событий каждого сообщения, восстановление с полным пересчётом, валидация и лимиты; снимки v1 читаются как раньше.
+- Изоляция свайпов: пересчёт перед сборкой промпта, корректировка устаревшего идентификатора свайпа, защита от смешивания свайпов.
+- Пагинация памяти, бейджи дельт (+N/−N) у записей, прокрутка длинных имён, автопрокрутка при раскрытии, сглаживание дневника и GPU-рендеринг по настройке.
+- Полный английский перевод строк, добавленных Extended.
+
+**Исправлено относительно 3.4:**
+
+- Правка или удаление следа в одном месте (память, журнал, дневник) теперь доходит до остальных поверхностей; в 3.4 они могли расходиться.
+- Развёрнутые списки памяти (кнопки «ещё N») больше не сворачиваются при правке или отмене из карточки персонажа: перерисовка панели сохраняет, сколько записей было раскрыто в каждой секции; если записей стало меньше (что-то удалили) — раскрытие ограничивается новым размером.
+- Отключение единственного следа памяти больше не убирает карточку уже известного персонажа: карточка остаётся на базовых значениях отношений.
+- Импорт снимка v2 в пустой или короткий чат больше не теряет события.
+- Поп-апы тулбара не уезжают за экран и не мерцают при переключении; при нехватке места разворачиваются над кнопкой.
+- Кнопка генератора в состоянии загрузки действительно отменяет генерацию; панель действий скрывается мгновенно, без мерцания.
+- Позиция прокрутки всех трёх вкладок панели сохраняется при перерисовке; открытый редактор персонажа восстанавливается.
+- Устранена утечка таймеров при каждой перерисовке HUD; удалено около 126 строк мёртвого кода.
+
+Всё поведение зафиксировано 314 автоматическими проверками.
+
 ### Обновление трекера после нового ответа — 24 октября 2026 (без изменения версии)
 
 - Исправлен вызов несуществующего `markdownToHtml` после очистки служебного блока в видимом сообщении. Используется штатный `updateMessageBlock` Таверны.
@@ -137,6 +176,45 @@
 Источник: [78557dc](https://github.com/maxkara14/BB-Visual-Novel-Engine/commit/78557dc), включая версию в manifest. Более ранняя история здесь не реконструирована.
 
 ## English
+
+### 3.5.0 Extended — October 28, 2026
+
+The Extended build moves onto the fresh base of the original ([maxkara14/BB-Visual-Novel-Engine](https://github.com/maxkara14/BB-Visual-Novel-Engine), as of October 24) and merges both lines of development: every Extended 3.2–3.4 feature now sits on the new base together with the original's improvements. Settings and chat-data keys are unchanged — upgrading from 3.4 picks up relationship data and nearly all settings automatically (the generator toggle is worth re-checking).
+
+**From the original (accumulated since May):**
+
+- Portrait workshop: GPT Image parameters (resolution, aspect ratio, quality, exact size, `xhigh`/`max` for 2.5) and Grok; OpenAI Images, OpenAI Chat, Gemini and Naistera connections; a gallery saving generations per chat, persona and character.
+- One relationship editor under "Data": edit chat relationship changes (reason, emotion, scores), edit or hide memories and traits, remove unwanted characters, journal entries and moments from the imported baseline; up to 20 undo steps.
+- Avatars and source images stored as files on the Tavern server instead of being embedded in chat; moving legacy embedded images to files with byte-for-byte verification and a JSONL backup.
+- Chat branches receive relationships at the selected message; later imports and edits in the parent do not carry into earlier branches.
+- Manual relationship labels with priority over the model; neutral contacts without points; character card isolation from same-name cards of other stories.
+- Russian and English UI; recalculation optimizations and caching; BB Interactive Map 2.0 context for option generation.
+
+**Extended on top of the original:**
+
+- HUD toolbar with floating popups: settings, the developer console, hidden characters, export/import and the generator no longer require opening SillyTavern's extension menu.
+- Suspending the relationship tracker by clicking the status indicator; disabling options generation from the button near the input box, the toolbar switch or settings.
+- Editing and disabling events right in the journal, diary and character card. Editing a trace in any of the three places — memory, journal or diary — updates the others; actions are non-destructive with multi-level undo. Every disable confirmation (journal, diary, memory pill) uses the same "Disable event?" title and points to the restore path.
+- The relationship editor marks zero-score (0/0) events with a "No points" tag and explains on selection: such events enter neither memory, nor the journal, nor the diary, nor the prompt — only the status they set counts.
+- Undo buttons for the last edit on every journal and diary event (on diary cards a violet chip above the pencil — the entry text keeps its width) and next to the delete button on memory and trait entries in the character card, so an edit can be reverted right where it was made, without opening the edit form.
+- Social prompt instructions editor: overridable instructions ("custom" badge) and automatically assembled character data in a split view.
+- v2 snapshots: raw per-message events in the export, restoration with a full recalculation, validation and limits; v1 snapshots keep working.
+- Swipe isolation: a pre-prompt recalculation, stale swipe-id correction and guards against mixing swipes.
+- Memory pagination, delta badges (+N/−N) on entries, long-name scrolling, auto-scrolling on expand, diary anti-aliasing and GPU rendering.
+- A complete English translation of the strings Extended adds.
+
+**Fixed relative to 3.4:**
+
+- Editing or deleting a trace in one place (memory, journal, diary) now reaches the other surfaces; in 3.4 they could diverge.
+- Unfolded memory lists (the "show N more" buttons) no longer collapse when an entry is edited or an edit undone from the character card: the panel rebuild preserves how many pills each section had revealed; if the list shrank (something was deleted), the reveal clamps to the new size.
+- Disabling a character's only memory trace no longer removes the card of an already discovered character: the card stays on baseline scores.
+- Importing a v2 snapshot into an empty or short chat no longer loses events.
+- Toolbar popups stay on screen and no longer flicker while switching; they flip above the button when space is short.
+- The loading generator button actually cancels generation; the action panel hides instantly, without flicker.
+- Scroll positions of all three panel tabs survive re-renders; an open character editor is restored.
+- Fixed a timer leak on every HUD re-render; about 126 lines of dead code removed.
+
+All behavior is pinned by 314 automated checks.
 
 ### Tracker updates after a new reply — October 24, 2026 (no version change)
 
