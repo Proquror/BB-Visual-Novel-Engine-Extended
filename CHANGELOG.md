@@ -20,7 +20,7 @@
 **Extended поверх оригинала:**
 
 - Тулбар HUD с плавающими поп-апами: настройки, консоль разработчика, скрытые персонажи, экспорт/импорт и генератор больше не требуют раскрытия меню SillyTavern.
-- Отключение трекера отношений кликом по индикатору статуса; отключение генератора вариантов кнопкой у поля ввода, тумблером в тулбаре или в настройках.
+- Отключение трекера отношений кликом по индикатору статуса; отключение генератора вариантов кнопкой у поля ввода, тумблером в тулбаре, в настройках или иконкой питания в раскрытой панели действий.
 - Правка и отключение событий прямо в журнале, дневнике и карточке персонажа. Правка следа в любом из трёх мест — память, журнал, дневник — синхронно обновляет остальные; действия недеструктивны и имеют многоуровневую отмену. Все подтверждения отключения (журнал, дневник, плашка памяти) используют один заголовок «Отключить событие?» и подсказывают путь возврата.
 - Редактор отношений помечает события с нулевыми баллами (0/0) ярлыком «Без баллов» и при выборе объясняет: такие события не попадают в память, журнал, дневник и промпт — учитывается только заданный ими статус.
 - Кнопки отмены последней правки у каждого события в журнале и дневнике (в карточке дневника — фиолетовый чип над карандашом, текст записи не сужается) и у записей памяти и черт в карточке персонажа (слева от удаления): откатить правку можно там же, где она сделана, не открывая форму редактирования.
@@ -40,8 +40,11 @@
 - Кнопка генератора в состоянии загрузки действительно отменяет генерацию; панель действий скрывается мгновенно, без мерцания.
 - Позиция прокрутки всех трёх вкладок панели сохраняется при перерисовке; открытый редактор персонажа восстанавливается.
 - Устранена утечка таймеров при каждой перерисовке HUD; удалено около 126 строк мёртвого кода.
+- Тумблер генератора больше не пропадает после цикла «выключить → включить», пока панель не переоткроешь: за видимость кнопки теперь отвечает одна функция вместо трёх рассыпанных прятаний.
+- Нижний ряд панели действий снова помещается в одну строку: «Выключить» стала компактной иконкой питания в стиле тумблера, иконка отцентрирована по пикселям.
+- Стрелка на кнопке «Скрыть» развёрнута вниз — панель раскрывается вниз, и направление теперь читается правильно.
 
-Всё поведение зафиксировано 314 автоматическими проверками.
+Всё поведение зафиксировано 315 автоматическими проверками.
 
 ### Обновление трекера после нового ответа — 24 октября 2026 (без изменения версии)
 
@@ -193,7 +196,7 @@ The Extended build moves onto the fresh base of the original ([maxkara14/BB-Visu
 **Extended on top of the original:**
 
 - HUD toolbar with floating popups: settings, the developer console, hidden characters, export/import and the generator no longer require opening SillyTavern's extension menu.
-- Suspending the relationship tracker by clicking the status indicator; disabling options generation from the button near the input box, the toolbar switch or settings.
+- Suspending the relationship tracker by clicking the status indicator; disabling options generation from the button near the input box, the toolbar switch, settings or the power icon inside the open action panel.
 - Editing and disabling events right in the journal, diary and character card. Editing a trace in any of the three places — memory, journal or diary — updates the others; actions are non-destructive with multi-level undo. Every disable confirmation (journal, diary, memory pill) uses the same "Disable event?" title and points to the restore path.
 - The relationship editor marks zero-score (0/0) events with a "No points" tag and explains on selection: such events enter neither memory, nor the journal, nor the diary, nor the prompt — only the status they set counts.
 - Undo buttons for the last edit on every journal and diary event (on diary cards a violet chip above the pencil — the entry text keeps its width) and next to the delete button on memory and trait entries in the character card, so an edit can be reverted right where it was made, without opening the edit form.
@@ -213,8 +216,11 @@ The Extended build moves onto the fresh base of the original ([maxkara14/BB-Visu
 - The loading generator button actually cancels generation; the action panel hides instantly, without flicker.
 - Scroll positions of all three panel tabs survive re-renders; an open character editor is restored.
 - Fixed a timer leak on every HUD re-render; about 126 lines of dead code removed.
+- The generator toggle no longer disappears after a disable → enable cycle until the panel is reopened: a single function now owns the button's visibility instead of three scattered hide calls.
+- The bottom row of the action panel fits one line again: "Disable" is now a compact toggle-style power icon with the glyph centered to the pixel.
+- The "Hide" button chevron points down, matching the panel's downward reveal.
 
-All behavior is pinned by 314 automated checks.
+All behavior is pinned by 315 automated checks.
 
 ### Tracker updates after a new reply — October 24, 2026 (no version change)
 

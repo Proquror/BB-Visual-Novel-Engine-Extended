@@ -1609,6 +1609,7 @@ body.bb-social-chat-visible:not(.bb-social-chat-leaving) #bb-social-hud-toggle.b
 #bb-vn-options-container.active .bb-vn-utility-panel:nth-child(2) { animation-delay: 0.21s; }
 #bb-vn-options-container.active .bb-vn-utility-panel:nth-child(3) { animation-delay: 0.24s; }
 #bb-vn-options-container.active .bb-vn-utility-panel:nth-child(4) { animation-delay: 0.27s; }
+#bb-vn-options-container.active .bb-vn-utility-panel:nth-child(5) { animation-delay: 0.30s; }
 .bb-vn-empty-state {
     grid-column: 1 / -1;
     display: grid;
@@ -1745,12 +1746,12 @@ body.bb-social-chat-visible:not(.bb-social-chat-leaving) #bb-social-hud-toggle.b
     grid-column: 1 / -1;
     width: 100%;
     margin-top: 4px;
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    display: flex;
     gap: 8px;
     align-self: stretch;
 }
 .bb-vn-utility-panel {
+    flex: 1 1 0;
     min-width: 0;
     min-height: 38px;
     height: 38px;
@@ -1798,6 +1799,30 @@ body.bb-social-chat-visible:not(.bb-social-chat-leaving) #bb-social-hud-toggle.b
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+/* «Выключить» as a compact fork-style power chip (variant Б): icon-only,
+   same sky-blue accent, glow and rounded shell as #bb-vn-btn-toggle-generator. */
+#bb-vn-btn-disable.bb-vn-utility-power {
+    flex: 0 0 40px;
+    width: 40px;
+    padding: 0;
+    /* inherited 0.75px letter-spacing pads the glyph advance on the right,
+       which nudges the icon off the visual center — icon-only chip must not inherit it */
+    letter-spacing: normal;
+    border-radius: 13px;
+    color: #7dd3fc;
+    border-color: rgba(148, 163, 184, 0.22);
+    background: linear-gradient(180deg, rgba(15, 20, 30, 0.94), rgba(13, 18, 28, 0.92));
+}
+#bb-vn-btn-disable.bb-vn-utility-power i {
+    font-size: 14px;
+    filter: drop-shadow(0 0 6px rgba(125, 211, 252, 0.35));
+}
+#bb-vn-btn-disable.bb-vn-utility-power:hover,
+#bb-vn-btn-disable.bb-vn-utility-power:focus-visible {
+    color: #bae6fd;
+    border-color: rgba(125, 211, 252, 0.5);
+    box-shadow: 0 12px 22px rgba(0, 0, 0, 0.22), 0 0 14px rgba(125, 211, 252, 0.18);
 }
 .bb-vn-sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; }
 
@@ -2017,7 +2042,6 @@ body.bb-social-chat-visible:not(.bb-social-chat-leaving) #bb-social-hud-toggle.b
     .bb-vn-utility-row {
         grid-column: 1 / -1;
         gap: 6px !important;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
     }
     .bb-vn-utility-panel {
         min-height: 36px;
@@ -2027,6 +2051,10 @@ body.bb-social-chat-visible:not(.bb-social-chat-leaving) #bb-social-hud-toggle.b
         font-size: 9px;
         letter-spacing: 0.45px;
         border-radius: 11px;
+    }
+    #bb-vn-btn-disable.bb-vn-utility-power {
+        flex: 0 0 36px;
+        width: 36px;
     }
     .bb-vn-utility-panel i {
         font-size: 12px;
@@ -4359,7 +4387,6 @@ body.bb-social-chat-visible:not(.bb-social-chat-leaving) #bb-social-hud-toggle.b
 }
 
 #bb-vn-action-bar[hidden] { display: none !important; }
-#bb-vn-btn-disable { grid-column: 1 / -1; }
 
 #bb-vn-enable-options[hidden] { display: none !important; }
 #bb-vn-enable-options {

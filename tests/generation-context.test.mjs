@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { SourceTextModule, SyntheticModule, createContext } from 'node:vm';
+import { SourceTextModule, SyntheticModule, createContext, runInContext } from 'node:vm';
 
 // Execute the actual generator/parser/state with only the Tavern and UI boundaries mocked.
 // Run: node --experimental-vm-modules --test tests/generation-context.test.mjs
@@ -1648,6 +1648,38 @@ test('option visibility swaps compact restore button and panel, safely reversing
  api.syncOptionsVisibility(true);assert.equal(bar.hidden,false);assert.equal(restore.hidden,true);
 });
 
+
+test('generator toggle visibility follows panel state, typing and the enable cycle', () => {
+    const source = readFileSync(new URL('../modules/actions.js', import.meta.url), 'utf8');
+    const slice = source.slice(source.indexOf('function syncGeneratorToggleVisibility'), source.indexOf('function openVnPanel'));
+    assert.ok(slice.includes('vnOptionsEnabled'));
+    const area = function HTMLTextAreaElement() {};
+    let active = false;
+    const toggle = { style: {} };
+    const opts = { classList: { contains: name => name === 'active' && active } };
+    const ta = new area(); ta.value = '';
+    const settings = { 'BB-Visual-Novel': { vnOptionsEnabled: true } };
+    const sandbox = createContext({
+        document: {
+            getElementById: id => (id === 'bb-vn-btn-toggle-generator' ? toggle : id === 'bb-vn-options-container' ? opts : null),
+            querySelector: () => ta,
+        },
+        extension_settings: settings,
+        MODULE_NAME: 'BB-Visual-Novel',
+        HTMLTextAreaElement: area,
+    });
+    runInContext(slice, sandbox);
+    const sync = sandbox.syncGeneratorToggleVisibility;
+    sync(); assert.equal(toggle.style.display, '');
+    active = true; sync(); assert.equal(toggle.style.display, 'none');
+    active = false; sync(); assert.equal(toggle.style.display, '');
+    ta.value = '   '; sync(); assert.equal(toggle.style.display, '');
+    ta.value = 'привет'; sync(); assert.equal(toggle.style.display, 'none');
+    ta.value = ''; settings['BB-Visual-Novel'].vnOptionsEnabled = false; sync();
+    assert.equal(toggle.style.display, 'none');
+    settings['BB-Visual-Novel'].vnOptionsEnabled = true; sync();
+    assert.equal(toggle.style.display, '');
+});
 
 test('custom description instructions replace the dossier and keep context and language', async () => {
     const h=await harness();h.settings['BB-Visual-Novel'].outputLanguage='ru';
